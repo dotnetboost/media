@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>DotNetBoost.Media.FileSystem</PackageId>
+    <Description>
+      Local-disk storage backend for DotNetBoost.Media. Writes uploads under a directory you
+      choose, with every path resolved and proven to be inside it, optional public URLs for
+      files a web server or CDN serves directly, and a startup check that the directory is
+      actually writable. No dependencies beyond the Core package.
+    </Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotNetBoost.Media.ProviderTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+  </ItemGroup>
+</Project>

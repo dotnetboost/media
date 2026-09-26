@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>DotNetBoost.Media.AzureBlobStorage</PackageId>
+    <Description>
+      Azure Blob Storage backend for DotNetBoost.Media. Uploads stream straight into a container,
+      downloads can be handed to clients as time-limited SAS URLs so the bytes never pass through
+      the application, and the container is created private. Works with a connection string or a
+      managed identity, and supports a CDN or custom domain in front of it.
+    </Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotNetBoost.Media.IntegrationTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <PackageReference Include="Azure.Storage.Blobs" />
+  </ItemGroup>
+</Project>

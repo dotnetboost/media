@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>DotNetBoost.Media.Dapper</PackageId>
+    <Description>
+      Dapper metadata store for DotNetBoost.Media, for applications that do not use EF Core. One
+      table records every upload, in the same shape the EF Core store maps — so a database serves
+      either — with optional startup DDL, transaction enlistment so a file and its entity commit
+      together, and SQL written for SQL Server, PostgreSQL and SQLite.
+    </Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotNetBoost.Media.ProviderTests" />
+    <InternalsVisibleTo Include="DotNetBoost.Media.IntegrationTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <PackageReference Include="Dapper" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

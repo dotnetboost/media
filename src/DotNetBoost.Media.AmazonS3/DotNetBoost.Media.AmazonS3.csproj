@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>DotNetBoost.Media.AmazonS3</PackageId>
+    <Description>
+      Amazon S3 storage backend for DotNetBoost.Media — and for anything else that speaks the S3
+      API: MinIO, Cloudflare R2, DigitalOcean Spaces, Backblaze B2. Uploads switch to a multipart
+      transfer on their own for large files, downloads can be handed to clients as pre-signed
+      URLs, and a shared bucket can be partitioned with a key prefix.
+    </Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotNetBoost.Media.IntegrationTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <PackageReference Include="AWSSDK.S3" />
+  </ItemGroup>
+</Project>

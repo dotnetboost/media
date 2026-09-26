@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <!-- net10.0 only. These start real servers in containers; running the same suite twice to
+         prove a TFM difference that cannot exist would double an already slow job. -->
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.EntityFrameworkCore/DotNetBoost.Media.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.Dapper/DotNetBoost.Media.Dapper.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.MongoDb/DotNetBoost.Media.MongoDb.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.AzureBlobStorage/DotNetBoost.Media.AzureBlobStorage.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.AmazonS3/DotNetBoost.Media.AmazonS3.csproj" />
+    <ProjectReference Include="../DotNetBoost.Media.TestSupport/DotNetBoost.Media.TestSupport.csproj" />
+    <!-- For the shared store contract suite. These engines run the very same assertions SQLite
+         runs in ProviderTests, so a store that behaves differently on one of them shows up as a
+         failure rather than as a gap. -->
+    <ProjectReference Include="../DotNetBoost.Media.ProviderTests/DotNetBoost.Media.ProviderTests.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="Testcontainers.MsSql" />
+    <PackageReference Include="Testcontainers.MongoDb" />
+    <PackageReference Include="Testcontainers.Azurite" />
+    <PackageReference Include="Testcontainers.Minio" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+  </ItemGroup>
+</Project>

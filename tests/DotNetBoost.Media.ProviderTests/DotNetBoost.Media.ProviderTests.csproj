@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TargetFramework />
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.EntityFrameworkCore/DotNetBoost.Media.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.Dapper/DotNetBoost.Media.Dapper.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.FileSystem/DotNetBoost.Media.FileSystem.csproj" />
+    <ProjectReference Include="../DotNetBoost.Media.TestSupport/DotNetBoost.Media.TestSupport.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <!-- SQLite in a file, so both stores run against a real relational engine without a container.
+         The engine-specific behaviour the other two need is covered in IntegrationTests. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+</Project>

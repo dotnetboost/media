@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <TargetFramework />
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.API/DotNetBoost.Media.API.csproj" />
+    <ProjectReference Include="../DotNetBoost.Media.TestSupport/DotNetBoost.Media.TestSupport.csproj" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.AspNetCore.TestHost" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>DotNetBoost.Media.MongoDb</PackageId>
+    <Description>
+      MongoDB metadata store for DotNetBoost.Media. One collection records every upload, keyed by
+      the file's own id, with the same indexes the relational stores create so the same queries
+      are served the same way. Pairs with any storage backend — local disk, Azure Blob Storage or
+      Amazon S3.
+    </Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DotNetBoost.Media.IntegrationTests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <PackageReference Include="MongoDB.Driver" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+</Project>

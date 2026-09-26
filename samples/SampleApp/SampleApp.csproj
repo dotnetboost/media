@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <!-- Pure JSON API: no wwwroot, so skip the static web assets manifest. -->
+    <StaticWebAssetsEnabled>false</StaticWebAssetsEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.EntityFrameworkCore/DotNetBoost.Media.EntityFrameworkCore.csproj" />
+    <ProjectReference Include="../../src/DotNetBoost.Media.API/DotNetBoost.Media.API.csproj" />
+    <!-- OpenTelemetry, health checks, service discovery and resilient HttpClients. -->
+    <ProjectReference Include="../../aspire/DotNetBoost.Media.ServiceDefaults/DotNetBoost.Media.ServiceDefaults.csproj" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" />
+    <PackageReference Include="Scalar.AspNetCore" />
+  </ItemGroup>
+
+  <!--
+    Storage backend. Exactly one group below is active; it must match the active block in
+    Program.cs and the resources started by aspire/DotNetBoost.Media.AppHost.
+  -->
+  <ItemGroup Label="Storage — ACTIVE: local disk (no container)">
+    <ProjectReference Include="../../src/DotNetBoost.Media.FileSystem/DotNetBoost.Media.FileSystem.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Label="Storage — ALTERNATIVE: Azure Blob Storage (Azurite under Aspire)">
+    <!-- <ProjectReference Include="../../src/DotNetBoost.Media.AzureBlobStorage/DotNetBoost.Media.AzureBlobStorage.csproj" /> -->
+  </ItemGroup>
+
+  <ItemGroup Label="Storage — ALTERNATIVE: Amazon S3 (or any S3-compatible store)">
+    <!-- <ProjectReference Include="../../src/DotNetBoost.Media.AmazonS3/DotNetBoost.Media.AmazonS3.csproj" /> -->
+  </ItemGroup>
+
+  <!--
+    Database for the media table. Exactly one group below is active; it must match the active
+    block in Program.cs and the container started by the AppHost.
+  -->
+  <ItemGroup Label="Database — ACTIVE: PostgreSQL (EF Core)">
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" />
+  </ItemGroup>
+
+  <ItemGroup Label="Database — ALTERNATIVE: SQL Server (EF Core)">
+    <!-- <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" /> -->
+  </ItemGroup>
+
+  <ItemGroup Label="Database — ALTERNATIVE: SQLite (EF Core, no container)">
+    <!-- <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" /> -->
+  </ItemGroup>
+</Project>

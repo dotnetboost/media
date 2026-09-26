@@ -1,0 +1,170 @@
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Transitive pinning lifts every pinned version above to a direct dependency of the project.
+      Right for tests and samples, where the security pins below must win; wrong for the shipped
+      libraries, where it would add packages they never use to their NuGet dependencies and force
+      those versions onto applications. src/Directory.Build.props turns it off for them, so this
+      is only a default.
+    -->
+    <CentralPackageTransitivePinningEnabled Condition="'$(CentralPackageTransitivePinningEnabled)' == ''">true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+
+  <ItemGroup Label="Microsoft">
+    <PackageVersion Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="10.0.400" />
+  </ItemGroup>
+
+  <ItemGroup Label="API documentation (sample only)">
+    <PackageVersion Include="Scalar.AspNetCore" Version="2.17.1" />
+  </ItemGroup>
+
+  <!-- Aspire: aspire/ and samples/ only, never a shipped package. Same versions as
+       DotNetBoost.Settings and DotNetBoost.MultiLingual, so the AppHosts share one restored
+       Aspire bundle. -->
+  <ItemGroup Label="Aspire — AppHost (orchestration)">
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.Azure.Storage" Version="13.5.2" />
+    <!-- Referenced only when the matching block in AppHost.cs is uncommented. -->
+    <PackageVersion Include="Aspire.Hosting.SqlServer" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.MongoDB" Version="13.5.2" />
+  </ItemGroup>
+
+  <ItemGroup Label="Aspire — consumed by the sample API">
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Aspire — service defaults (telemetry, resilience, discovery)">
+    <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+    <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="10.9.0" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.18.0" />
+    <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.18.0" />
+  </ItemGroup>
+
+  <!--
+    Storage backends. FLOORS for the shipped providers, not ceilings: an application already on a
+    newer release of either SDK keeps it. Both SDKs are the only third-party dependency their
+    package has, and neither reaches Core — an application that stores files on local disk
+    downloads neither.
+  -->
+  <ItemGroup Label="Azure Blob Storage">
+    <PackageVersion Include="Azure.Storage.Blobs" Version="12.29.2" />
+  </ItemGroup>
+
+  <ItemGroup Label="Amazon S3">
+    <PackageVersion Include="AWSSDK.S3" Version="4.0.103.4" />
+  </ItemGroup>
+
+  <ItemGroup Label="MongoDB">
+    <PackageVersion Include="MongoDB.Driver" Version="3.9.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Dapper">
+    <PackageVersion Include="Dapper" Version="2.1.79" />
+  </ItemGroup>
+
+  <!-- Transitive pins: patched versions for packages flagged by NuGet audit. -->
+  <ItemGroup Label="Transitive security pins">
+    <!-- Microsoft.Data.Sqlite -> SQLitePCLRaw.* 2.1.11 (GHSA-2m69-gcr7-jv3q, fixed after 2.1.11). -->
+    <PackageVersion Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.13" />
+    <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="2.1.13" />
+    <PackageVersion Include="SQLitePCLRaw.provider.e_sqlite3" Version="2.1.13" />
+    <PackageVersion Include="SQLitePCLRaw.core" Version="2.1.13" />
+  </ItemGroup>
+
+  <ItemGroup Label="Integration testing">
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers.MongoDb" Version="4.15.0" />
+    <!-- Azurite is Microsoft's Blob Storage emulator; MinIO speaks the S3 API. Between them the
+         two cloud backends are tested against a real server rather than a mock. -->
+    <PackageVersion Include="Testcontainers.Azurite" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers.Minio" Version="4.15.0" />
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.6" />
+  </ItemGroup>
+
+  <ItemGroup Label="Testing">
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.6.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="coverlet.collector" Version="10.0.1" />
+  </ItemGroup>
+
+  <!--
+    Per-TFM versions. The shipped packages multi-target net8.0 (LTS) and net10.0, and the
+    EF Core / ASP.NET Core families ship a separate major per runtime — EF Core 10 has no
+    net8.0 asset at all. $(TargetFramework) is set during NuGet's per-TFM evaluation, so
+    each inner build resolves the family matching its runtime.
+  -->
+  <PropertyGroup>
+    <_Net8 Condition="'$(TargetFramework)' == 'net8.0'">true</_Net8>
+  </PropertyGroup>
+
+  <!--
+    Microsoft.Extensions.* follow the runtime too. They are MINIMUM versions for the shipped
+    packages: a net8.0 application keeps the 8.0 line its runtime ships (and services), and one
+    that wants a newer line can still take it — including through DotNetBoost.Settings or
+    DotNetBoost.MultiLingual, which NuGet resolves together with these by picking the highest.
+    Requiring 10.x on net8.0 would force it on everyone, and fail restore (NU1605) for any
+    application pinning 8.x itself.
+
+    On net8.0 the shipped libraries (IsShippedLibrary, set in src/Directory.Build.props) take the
+    LOWEST version with the APIs they use — 8.0.0 — so no application on the 8.0 line can pin
+    below them. Everything else takes the latest patch, which the test projects need anyway.
+  -->
+  <ItemGroup Label="Microsoft.Extensions — net8.0, shipped libraries" Condition="'$(_Net8)' == 'true' and '$(IsShippedLibrary)' == 'true'">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Microsoft.Extensions — net8.0, tests and samples" Condition="'$(_Net8)' == 'true' and '$(IsShippedLibrary)' != 'true'">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="8.0.1" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+    <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="8.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="8.0.1" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="8.0.2" />
+  </ItemGroup>
+
+  <ItemGroup Label="Microsoft.Extensions — net10.0" Condition="'$(_Net8)' != 'true'">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="EF Core / ASP.NET Core — net8.0" Condition="'$(_Net8)' == 'true'">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="8.0.30" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="8.0.30" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.30" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="8.0.30" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="8.0.30" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.30" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="EF Core / ASP.NET Core — net10.0" Condition="'$(_Net8)' != 'true'">
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.11" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <!-- The raw ADO.NET driver, for the Dapper sample. Same version the EF provider above
+         resolves, so the two share one restored Npgsql. -->
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,276 @@
+using Amazon.S3;
+using Azure.Storage.Blobs;
+using DotNetBoost.Media.AmazonS3;
+using DotNetBoost.Media.AzureBlobStorage;
+using DotNetBoost.Media.Core;
+using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Models;
+using DotNetBoost.Media.Core.Services;
+using DotNetBoost.Media.TestSupport;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using Testcontainers.Azurite;
+using Testcontainers.Minio;
+
+namespace DotNetBoost.Media.IntegrationTests;
+
+/// <summary>
+/// The behaviour every <see cref="IMediaStorageProvider"/> has to have, run against a real server
+/// for each of them — Azurite for Azure Blob Storage, MinIO for S3. Mocking a cloud SDK proves
+/// only that the mock was written to match the test; these run the same bytes through the same
+/// wire protocol the production backend uses.
+/// </summary>
+public abstract class StorageContractTests : IAsyncLifetime
+{
+    protected IMediaStorageProvider Storage { get; private set; } = null!;
+
+    protected abstract Task<IMediaStorageProvider> CreateStorageAsync();
+
+    protected virtual Task CleanupAsync() => Task.CompletedTask;
+
+    /// <summary>Whether this backend mints direct URLs, so the URL assertions know what to expect.</summary>
+    protected abstract bool MintsUrls { get; }
+
+    public async Task InitializeAsync() => Storage = await CreateStorageAsync();
+
+    public Task DisposeAsync() => CleanupAsync();
+
+    private static MediaWrite Write(byte[] content, string path) =>
+        new(new MemoryStream(content, writable: false), path, "image/png", ComputeChecksum: false);
+
+    private static string Path() => $"tests/{Guid.NewGuid():N}.png";
+
+    [Fact]
+    public async Task Save_then_OpenRead_round_trips_the_bytes()
+    {
+        var content = TestMedia.Png(4096);
+        var path    = Path();
+
+        var stored = await Storage.SaveAsync(Write(content, path));
+
+        Assert.Equal(path, stored.Path);
+
+        await using var stream = await Storage.OpenReadAsync(stored.Container, stored.Path);
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+
+        Assert.Equal(content, buffer.ToArray());
+    }
+
+    [Fact]
+    public async Task Save_handles_a_file_large_enough_to_go_multipart()
+    {
+        // Over the block size both backends use, so the SDK switches to a chunked or multipart
+        // upload — a different code path, and the one that carries real files.
+        var content = TestMedia.Unrecognised(5 * 1024 * 1024);
+        var path    = Path();
+
+        await Storage.SaveAsync(Write(content, path));
+
+        await using var stream = await Storage.OpenReadAsync(Storage.Container, path);
+        using var buffer = new MemoryStream();
+        await stream.CopyToAsync(buffer);
+
+        Assert.Equal(content.Length, buffer.Length);
+    }
+
+    [Fact]
+    public async Task OpenRead_reports_a_path_with_nothing_at_it() =>
+        await Assert.ThrowsAsync<MediaContentMissingException>(
+            () => Storage.OpenReadAsync(Storage.Container, "tests/not-there.png"));
+
+    [Fact]
+    public async Task Exists_answers_both_ways()
+    {
+        var path = Path();
+        await Storage.SaveAsync(Write(TestMedia.Png(), path));
+
+        Assert.True(await Storage.ExistsAsync(Storage.Container, path));
+        Assert.False(await Storage.ExistsAsync(Storage.Container, "tests/never-written.png"));
+    }
+
+    [Fact]
+    public async Task Delete_removes_the_object_and_says_whether_it_did()
+    {
+        var path = Path();
+        await Storage.SaveAsync(Write(TestMedia.Png(), path));
+
+        Assert.True(await Storage.DeleteAsync(Storage.Container, path));
+        Assert.False(await Storage.DeleteAsync(Storage.Container, path));
+        Assert.False(await Storage.ExistsAsync(Storage.Container, path));
+    }
+
+    [Fact]
+    public async Task A_traversing_path_is_refused_before_it_reaches_the_service() =>
+        await Assert.ThrowsAsync<InvalidMediaException>(
+            () => Storage.SaveAsync(Write(TestMedia.Png(), "../escaped.png")));
+
+    [Fact]
+    public async Task GetUrl_hands_out_a_link_a_client_can_actually_fetch()
+    {
+        var content = TestMedia.Png(128);
+        var path    = Path();
+        await Storage.SaveAsync(Write(content, path));
+
+        var url = await Storage.GetUrlAsync(Storage.Container, path, new MediaUrlOptions { ExpiresIn = TimeSpan.FromMinutes(5) });
+
+        if (!MintsUrls)
+        {
+            Assert.Null(url);
+            return;
+        }
+
+        Assert.NotNull(url);
+
+        // The point of a signed URL is that an unauthenticated client can use it. Anything less
+        // and the application may as well have streamed the bytes itself.
+        using var anonymous = new HttpClient();
+        var response = await anonymous.GetAsync(url);
+
+        response.EnsureSuccessStatusCode();
+        Assert.Equal(content, await response.Content.ReadAsByteArrayAsync());
+    }
+
+    [Fact]
+    public async Task Check_passes_against_a_reachable_container() => await ((IMediaStorageHealthCheck)Storage).CheckAsync();
+}
+
+/// <summary>The contract, against Azurite — Microsoft's own Blob Storage emulator.</summary>
+public sealed class AzureBlobStorageTests : StorageContractTests, IAsyncLifetime
+{
+    private readonly AzuriteContainer _container = new AzuriteBuilder("mcr.microsoft.com/azure-storage/azurite:latest").Build();
+
+    protected override bool MintsUrls => true;
+
+    protected override async Task<IMediaStorageProvider> CreateStorageAsync()
+    {
+        await _container.StartAsync();
+
+        var provider = new AzureBlobStorageProvider(
+            new BlobServiceClient(_container.GetConnectionString()),
+            new AzureBlobOptions { ContainerName = "media" });
+
+        await provider.CheckAsync();
+        return provider;
+    }
+
+    protected override Task CleanupAsync() => _container.DisposeAsync().AsTask();
+}
+
+/// <summary>The contract, against MinIO — an S3-compatible server.</summary>
+public sealed class AmazonS3StorageTests : StorageContractTests, IAsyncLifetime
+{
+    private const string Bucket = "media";
+
+    private readonly MinioContainer _container = new MinioBuilder("minio/minio:latest").Build();
+    private AmazonS3Client? _client;
+
+    protected override bool MintsUrls => true;
+
+    protected override async Task<IMediaStorageProvider> CreateStorageAsync()
+    {
+        await _container.StartAsync();
+
+        _client = new AmazonS3Client(
+            new Amazon.Runtime.BasicAWSCredentials(_container.GetAccessKey(), _container.GetSecretKey()),
+            new AmazonS3Config
+            {
+                ServiceURL     = _container.GetConnectionString(),
+                // MinIO serves buckets as a path, not a subdomain, so virtual-hosted-style
+                // addressing would resolve to a host that does not exist.
+                ForcePathStyle = true,
+                AuthenticationRegion = "us-east-1"
+            });
+
+        // The S3 backend deliberately never creates a bucket, so the test has to.
+        await _client.PutBucketAsync(Bucket);
+
+        var provider = new AmazonS3StorageProvider(_client, new AmazonS3Options { BucketName = Bucket });
+        await provider.CheckAsync();
+        return provider;
+    }
+
+    protected override async Task CleanupAsync()
+    {
+        _client?.Dispose();
+        await _container.DisposeAsync();
+    }
+}
+
+/// <summary>
+/// The whole library end to end: a real database for the rows and a real object store for the
+/// bytes, with the engine in between. Everything else tests one half.
+/// </summary>
+[Collection(PostgreSqlCollection.Name)]
+public sealed class EndToEndTests(PostgreSqlFixture postgres) : IAsyncLifetime
+{
+    private readonly AzuriteContainer _azurite = new AzuriteBuilder("mcr.microsoft.com/azure-storage/azurite:latest").Build();
+    private IntegrationContext? _context;
+    private IMediaManager _media = null!;
+
+    public async Task InitializeAsync()
+    {
+        await _azurite.StartAsync();
+
+        _context = new IntegrationContext(new DbContextOptionsBuilder<IntegrationContext>()
+            .UseNpgsql(postgres.ConnectionString)
+            .Options);
+
+        await _context.Database.EnsureCreatedAsync();
+
+        var storage = new AzureBlobStorageProvider(
+            new BlobServiceClient(_azurite.GetConnectionString()),
+            new AzureBlobOptions { ContainerName = "end-to-end" });
+
+        await storage.CheckAsync();
+
+        var clock = TimeProvider.System;
+
+        _media = new MediaManager(
+            new EntityFrameworkCore.EfCoreMediaStore(_context),
+            new MediaStorageProviderRegistry([storage], defaultProvider: null),
+            new DateHierarchyKeyGenerator(clock),
+            new ConventionEntityKeyAccessor(),
+            new MediaOptions(),
+            clock,
+            NullLogger<MediaManager>.Instance);
+    }
+
+    public async Task DisposeAsync()
+    {
+        if (_context is not null)
+            await _context.DisposeAsync();
+
+        await _azurite.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task A_file_uploaded_to_Azure_is_recorded_in_PostgreSQL_and_reads_back()
+    {
+        var content = TestMedia.Png(2048);
+
+        var file = await _media.UploadAsync(TestMedia.Upload(content, "end-to-end.png", category: "photos", tags: ["real"]));
+
+        Assert.Equal("AzureBlobStorage", file.StorageProvider);
+        Assert.Equal(2048, file.Size);
+        Assert.NotNull(file.Checksum);
+
+        _context!.ChangeTracker.Clear();
+
+        var read = await _media.GetAsync(file.Id);
+        Assert.Equal("end-to-end.png", read.FileName);
+        Assert.Equal(["real"], read.Tags);
+        Assert.Equal(DateTimeKind.Utc, read.CreatedAt.Kind);
+
+        using var opened = await _media.OpenReadAsync(file.Id);
+        using var buffer = new MemoryStream();
+        await opened.Stream.CopyToAsync(buffer);
+        Assert.Equal(content, buffer.ToArray());
+
+        var url = await _media.GetUrlAsync(file.Id);
+        Assert.NotNull(url);
+
+        await _media.DeleteAsync(file.Id);
+        Assert.Null(await _media.FindAsync(file.Id));
+    }
+}
