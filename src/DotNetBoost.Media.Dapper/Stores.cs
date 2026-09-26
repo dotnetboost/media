@@ -93,11 +93,16 @@ public sealed class DapperMediaStore(
         var sql        = Sql;
         var (where, p) = BuildWhere(sql.Dialect, query);
 
-        // Id as a tiebreaker: two files created in the same tick would otherwise page unstably,
-        // repeating one row and skipping another.
-        var order = query.OldestFirst
-            ? $"ORDER BY {DapperStatements.Quote(sql.Dialect, "CreatedAt")} ASC, {DapperStatements.Quote(sql.Dialect, "Id")} ASC "
-            : $"ORDER BY {DapperStatements.Quote(sql.Dialect, "CreatedAt")} DESC, {DapperStatements.Quote(sql.Dialect, "Id")} DESC ";
+        // Every ordering ends on the id: two rows that tie on the sort column would otherwise page
+        // unstably, repeating one and skipping another.
+        var column    = DapperStatements.Quote(sql.Dialect, query.SortBy switch
+        {
+            MediaSortBy.FileName => "FileName",
+            MediaSortBy.Size     => "Size",
+            _                    => "CreatedAt"
+        });
+        var direction = query.Descending ? "DESC" : "ASC";
+        var order     = $"ORDER BY {column} {direction}, {DapperStatements.Quote(sql.Dialect, "Id")} {direction} ";
 
         var statement = sql.Select + where + order + DapperStatements.Limit(sql.Dialect, query.Take, query.Skip);
 
@@ -198,6 +203,17 @@ public sealed class DapperMediaStore(
         {
             clauses.Add($"{C("ContentType")} LIKE @ContentTypePrefix ESCAPE '\\'");
             parameters.Add("ContentTypePrefix", Escape(prefix) + "%");
+        }
+
+        if (query.Search is { Length: > 0 } search)
+        {
+            // Both sides lowered, because LIKE is case-SENSITIVE on PostgreSQL — matching the
+            // column's collation would make "case-insensitive" true on SQL Server and false on
+            // Postgres, which is worse than either. Unanchored, so it matches anywhere in the
+            // name, and escaped so a search for "report_final" does not also match "reportxfinal".
+            // No index is lost: an unanchored LIKE could not use one anyway.
+            clauses.Add($"LOWER({C("FileName")}) LIKE @Search ESCAPE '\\'");
+            parameters.Add("Search", "%" + Escape(search.ToLowerInvariant()) + "%");
         }
 
         if (query.Tag is { } tag)

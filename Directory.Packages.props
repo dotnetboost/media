@@ -27,6 +27,8 @@
     <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.5.2" />
     <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.5.2" />
     <PackageVersion Include="Aspire.Hosting.Azure.Storage" Version="13.5.2" />
+    <!-- Runs the Nuxt dashboard in clients/dashboard as an orchestrated resource. -->
+    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.5.2" />
     <!-- Referenced only when the matching block in AppHost.cs is uncommented. -->
     <PackageVersion Include="Aspire.Hosting.SqlServer" Version="13.5.2" />
     <PackageVersion Include="Aspire.Hosting.MongoDB" Version="13.5.2" />

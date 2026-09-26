@@ -33,10 +33,10 @@ curl -o out.png http://localhost:5180/api/media/{id}/content
 # Attach to a product
 curl -X POST -H "Content-Type: application/json" \
      -d '{"sku":"LAMP-1","name":"Desk lamp","price":39.00}' \
-     http://localhost:5180/products
+     http://localhost:5180/api/products
 
-curl -F "file=@lamp.png" http://localhost:5180/products/1/images
-curl http://localhost:5180/products/1
+curl -F "file=@lamp.png" http://localhost:5180/api/products/1/images
+curl http://localhost:5180/api/products/1
 ```
 
 The OpenAPI document is at `/openapi/v1.json`, with Scalar at `/scalar/v1`.

@@ -74,9 +74,11 @@ app.MapMediaEndpoints();
 
 // ─────────────────────────────────────────────────────────────────────────────
 // This sample's own endpoints, showing media attached to an entity.
+//
+// Under /api, like the library's own, so clients/dashboard can reach both through one proxy.
 // ─────────────────────────────────────────────────────────────────────────────
 
-app.MapGet("/products", async (AppDbContext db, IMediaManager media, CancellationToken ct) =>
+app.MapGet("/api/products", async (AppDbContext db, IMediaManager media, CancellationToken ct) =>
 {
     var products = await db.Products.AsNoTracking().OrderBy(p => p.Id).ToListAsync(ct);
 
@@ -87,7 +89,7 @@ app.MapGet("/products", async (AppDbContext db, IMediaManager media, Cancellatio
     return responses;
 });
 
-app.MapGet("/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
+app.MapGet("/api/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
 {
     var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == id, ct);
 
@@ -96,19 +98,19 @@ app.MapGet("/products/{id:int}", async (int id, AppDbContext db, IMediaManager m
         : Results.Ok(await ToResponseAsync(product, media, ct));
 });
 
-app.MapPost("/products", async (CreateProductRequest request, AppDbContext db, CancellationToken ct) =>
+app.MapPost("/api/products", async (CreateProductRequest request, AppDbContext db, CancellationToken ct) =>
 {
     var product = new Product { Sku = request.Sku, Name = request.Name, Price = request.Price };
 
     db.Products.Add(product);
     await db.SaveChangesAsync(ct);
 
-    return Results.Created($"/products/{product.Id}", product);
+    return Results.Created($"/api/products/{product.Id}", product);
 });
 
 // Upload an image for a product. The two writes — the file and the product's own row — share the
 // DbContext, so one transaction covers both.
-app.MapPost("/products/{id:int}/images", async (
+app.MapPost("/api/products/{id:int}/images", async (
     int id,
     IFormFile file,
     AppDbContext db,
@@ -134,7 +136,7 @@ app.MapPost("/products/{id:int}/images", async (
 
 // Deleting a product takes its files with it. Nothing in the database refers to a media row — that
 // is what lets one table serve every entity — so no cascade will do this for you.
-app.MapDelete("/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
+app.MapDelete("/api/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
 {
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
     if (product is null)

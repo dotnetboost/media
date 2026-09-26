@@ -37,7 +37,7 @@ public class QueryTests
             harness.Clock.Advance(TimeSpan.FromMinutes(1));
         }
 
-        var page = await harness.Media.ListAsync(new MediaQuery { OldestFirst = true });
+        var page = await harness.Media.ListAsync(new MediaQuery { Descending = false });
 
         Assert.Equal("0.png", page.Items[0].FileName);
     }
@@ -53,7 +53,7 @@ public class QueryTests
             harness.Clock.Advance(TimeSpan.FromMinutes(1));
         }
 
-        var page = await harness.Media.ListAsync(new MediaQuery { Skip = 2, Take = 2, OldestFirst = true });
+        var page = await harness.Media.ListAsync(new MediaQuery { Skip = 2, Take = 2, Descending = false });
 
         Assert.Equal(5, page.Total);
         Assert.Equal(["2.png", "3.png"], page.Items.Select(f => f.FileName));

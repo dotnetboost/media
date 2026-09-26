@@ -184,7 +184,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         await Store.AddAsync(Row("a.png", minutesLate: 0));
         await Store.AddAsync(Row("b.png", minutesLate: 1));
 
-        var rows = await Store.QueryAsync(new MediaQuery { OldestFirst = true });
+        var rows = await Store.QueryAsync(new MediaQuery { Descending = false });
 
         Assert.Equal(["a.png", "b.png"], rows.Select(r => r.FileName));
     }
@@ -195,7 +195,7 @@ public abstract class StoreContractTests : IAsyncLifetime
         for (var i = 0; i < 5; i++)
             await Store.AddAsync(Row($"{i}.png", minutesLate: i));
 
-        var page = await Store.QueryAsync(new MediaQuery { Skip = 1, Take = 2, OldestFirst = true });
+        var page = await Store.QueryAsync(new MediaQuery { Skip = 1, Take = 2, Descending = false });
 
         Assert.Equal(["1.png", "2.png"], page.Select(r => r.FileName));
         Assert.Equal(5, await Store.CountAsync(new MediaQuery { Skip = 1, Take = 2 }));
@@ -263,6 +263,98 @@ public abstract class StoreContractTests : IAsyncLifetime
         });
 
         Assert.Equal("b.png", Assert.Single(rows).FileName);
+    }
+
+    [Fact]
+    public async Task Query_searches_the_file_name_anywhere_in_it()
+    {
+        await Store.AddAsync(Row("quarterly-report.pdf"));
+        await Store.AddAsync(Row("holiday-photo.png"));
+
+        var rows = await Store.QueryAsync(new MediaQuery { Search = "report" });
+
+        Assert.Equal("quarterly-report.pdf", Assert.Single(rows).FileName);
+    }
+
+    [Fact]
+    public async Task Query_search_ignores_case()
+    {
+        // LIKE is case-sensitive on PostgreSQL and case-insensitive on SQL Server by default, so
+        // without both sides lowered this passes on one engine and fails on the other.
+        await Store.AddAsync(Row("Quarterly-REPORT.pdf"));
+
+        var rows = await Store.QueryAsync(new MediaQuery { Search = "quarterly-report" });
+
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    public async Task Query_search_treats_wildcards_as_literal_characters()
+    {
+        await Store.AddAsync(Row("report_final.pdf"));
+        await Store.AddAsync(Row("reportxfinal.pdf"));
+
+        // "_" is a single-character wildcard. Unescaped, this matches both.
+        var rows = await Store.QueryAsync(new MediaQuery { Search = "report_final" });
+
+        Assert.Equal("report_final.pdf", Assert.Single(rows).FileName);
+
+        // And "%" must not match everything.
+        Assert.Empty(await Store.QueryAsync(new MediaQuery { Search = "%" }));
+    }
+
+    [Fact]
+    public async Task Query_search_combines_with_the_other_filters()
+    {
+        await Store.AddAsync(Row("report-a.pdf", category: "invoices"));
+        await Store.AddAsync(Row("report-b.pdf", category: "manuals"));
+
+        var rows = await Store.QueryAsync(new MediaQuery { Search = "report", Category = "invoices" });
+
+        Assert.Equal("report-a.pdf", Assert.Single(rows).FileName);
+    }
+
+    [Fact]
+    public async Task Query_sorts_by_file_name()
+    {
+        await Store.AddAsync(Row("charlie.png", minutesLate: 0));
+        await Store.AddAsync(Row("alpha.png", minutesLate: 1));
+        await Store.AddAsync(Row("bravo.png", minutesLate: 2));
+
+        var ascending = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.FileName, Descending = false });
+        Assert.Equal(["alpha.png", "bravo.png", "charlie.png"], ascending.Select(r => r.FileName));
+
+        var descending = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.FileName });
+        Assert.Equal(["charlie.png", "bravo.png", "alpha.png"], descending.Select(r => r.FileName));
+    }
+
+    [Fact]
+    public async Task Query_sorts_by_size()
+    {
+        await Store.AddAsync(Row("medium.png", size: 500));
+        await Store.AddAsync(Row("small.png", size: 10));
+        await Store.AddAsync(Row("large.png", size: 9000));
+
+        var ascending = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.Size, Descending = false });
+        Assert.Equal(["small.png", "medium.png", "large.png"], ascending.Select(r => r.FileName));
+
+        var descending = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.Size });
+        Assert.Equal(["large.png", "medium.png", "small.png"], descending.Select(r => r.FileName));
+    }
+
+    [Fact]
+    public async Task Sorting_pages_stably_when_rows_tie()
+    {
+        // Three files of identical size: the sort column cannot order them, so only the id
+        // tiebreaker stops a page from repeating one row and skipping another.
+        for (var i = 0; i < 6; i++)
+            await Store.AddAsync(Row($"{i}.png", size: 100));
+
+        var first  = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.Size, Take = 3 });
+        var second = await Store.QueryAsync(new MediaQuery { SortBy = MediaSortBy.Size, Skip = 3, Take = 3 });
+
+        var seen = first.Concat(second).Select(r => r.Id).ToList();
+        Assert.Equal(6, seen.Distinct().Count());
     }
 
     [Fact]

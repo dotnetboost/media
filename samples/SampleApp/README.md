@@ -18,6 +18,9 @@ block in `Program.cs` and its package in `SampleApp.csproj`.
 | `Data/AppDbContext.cs` | `modelBuilder.ApplyMedia()` at the end of `OnModelCreating`. That is the whole schema change. |
 | `Program.cs` | `AddMedia().UseEntityFrameworkCore<AppDbContext>().UseFileSystem(...)`, and the endpoints below. |
 
+The sample's own routes sit under `/api` alongside the library's, so `clients/dashboard` reaches
+both through one proxy.
+
 ## Endpoints
 
 The library's own, from `MapMediaEndpoints()`:
@@ -34,14 +37,14 @@ DELETE /api/media/{id}            delete
 And this sample's, showing media attached to an entity:
 
 ```
-GET    /products                  products, each with its images
-GET    /products/{id}
-POST   /products
-POST   /products/{id}/images      upload an image for a product
-DELETE /products/{id}             deletes the product AND its files
+GET    /api/products                  products, each with its images
+GET    /api/products/{id}
+POST   /api/products
+POST   /api/products/{id}/images      upload an image for a product
+DELETE /api/products/{id}             deletes the product AND its files
 ```
 
-`DELETE /products/{id}` is the one worth reading. There is no foreign key from a media row to
+`DELETE /api/products/{id}` is the one worth reading. There is no foreign key from a media row to
 `Products` — that is what lets one table serve every entity — so nothing cascades, and the handler
 calls `media.For(product).DeleteAllAsync()` itself.
 
@@ -50,10 +53,10 @@ calls `media.For(product).DeleteAllAsync()` itself.
 ```bash
 curl -X POST -H "Content-Type: application/json" \
      -d '{"sku":"LAMP-1","name":"Desk lamp","price":39.00}' \
-     http://localhost:5180/products
+     http://localhost:5180/api/products
 
-curl -F "file=@lamp.png" http://localhost:5180/products/1/images
-curl http://localhost:5180/products/1
+curl -F "file=@lamp.png" http://localhost:5180/api/products/1/images
+curl http://localhost:5180/api/products/1
 ```
 
 OpenAPI at `/openapi/v1.json`, Scalar at `/scalar/v1`.

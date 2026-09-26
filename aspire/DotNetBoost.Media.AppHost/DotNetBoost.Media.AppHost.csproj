@@ -26,6 +26,9 @@
     <!-- Azurite, for running the Azure Blob Storage backend locally. -->
     <PackageReference Include="Aspire.Hosting.Azure.Storage" />
 
+    <!-- Runs the Nuxt dashboard in clients/dashboard as an orchestrated resource. -->
+    <PackageReference Include="Aspire.Hosting.JavaScript" />
+
     <!-- Alternatives — uncomment alongside their blocks in AppHost.cs. -->
     <!-- <PackageReference Include="Aspire.Hosting.SqlServer" /> -->
     <!-- <PackageReference Include="Aspire.Hosting.MongoDB" /> -->

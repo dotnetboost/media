@@ -112,13 +112,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var filtered = Filter(_context.Set<MediaFile>().AsQueryable(), query);
-
-        filtered = query.OldestFirst
-            // Id as a tiebreaker: two files uploaded in the same tick would otherwise page
-            // unstably, repeating one row and skipping another.
-            ? filtered.OrderBy(f => f.CreatedAt).ThenBy(f => f.Id)
-            : filtered.OrderByDescending(f => f.CreatedAt).ThenByDescending(f => f.Id);
+        var filtered = Sort(Filter(_context.Set<MediaFile>().AsQueryable(), query), query);
 
         return await filtered
             .Skip(query.Skip)
@@ -153,6 +147,21 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
     /// two cannot drift — a total that does not match the rows it is a total of is worse than no
     /// total at all.
     /// </summary>
+    /// <summary>
+    /// Applies a query's ordering. Every ordering ends on the id, so two rows that tie on the sort
+    /// column page stably rather than repeating one and skipping another.
+    /// </summary>
+    private static IQueryable<MediaFile> Sort(IQueryable<MediaFile> files, MediaQuery query) =>
+        (query.SortBy, query.Descending) switch
+        {
+            (MediaSortBy.FileName, true)  => files.OrderByDescending(f => f.FileName).ThenByDescending(f => f.Id),
+            (MediaSortBy.FileName, false) => files.OrderBy(f => f.FileName).ThenBy(f => f.Id),
+            (MediaSortBy.Size, true)      => files.OrderByDescending(f => f.Size).ThenByDescending(f => f.Id),
+            (MediaSortBy.Size, false)     => files.OrderBy(f => f.Size).ThenBy(f => f.Id),
+            (_, false)                    => files.OrderBy(f => f.CreatedAt).ThenBy(f => f.Id),
+            _                             => files.OrderByDescending(f => f.CreatedAt).ThenByDescending(f => f.Id)
+        };
+
     /// <summary>
     /// Neutralises the wildcards in a value used inside a LIKE. Escaping the escape character
     /// first is what keeps the transformation reversible.
@@ -190,6 +199,23 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
 
         if (query.ContentTypePrefix is { } prefix)
             files = files.Where(f => EF.Functions.Like(f.ContentType, Escape(prefix) + "%", "\\"));
+
+        if (query.Search is { Length: > 0 } search)
+        {
+            // Both sides lowered, because LIKE is case-SENSITIVE on PostgreSQL — matching the
+            // column's collation would make "case-insensitive" true on SQL Server and false on
+            // Postgres, which is worse than either. Unanchored, so it matches anywhere in the
+            // name, and escaped so a search for "report_final" does not also match "reportxfinal".
+            // No index is lost: an unanchored LIKE could not use one anyway.
+            var pattern = "%" + Escape(search.ToLowerInvariant()) + "%";
+
+            // CA1304/CA1311 want ToLower(CultureInfo). This ToLower() is never executed by .NET —
+            // it is an expression tree that EF translates to the database's own LOWER(), and the
+            // culture-taking overload has no translation at all.
+#pragma warning disable CA1304, CA1311
+            files = files.Where(f => EF.Functions.Like(f.FileName.ToLower(), pattern, "\\"));
+#pragma warning restore CA1304, CA1311
+        }
 
         if (query.Tag is { } tag)
         {

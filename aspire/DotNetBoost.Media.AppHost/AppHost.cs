@@ -5,7 +5,8 @@
 //  though `aspire run` does the same if you have it installed:
 //
 //    • the database container holding the sample's tables and MediaFiles  (PostgreSQL)
-//    • the API — samples/SampleApp, storing bytes on local disk
+//    • the API       — samples/SampleApp, storing bytes on local disk
+//    • the dashboard — clients/dashboard (Nuxt), pointed at the API
 //
 //  The sample's DATABASE and its STORAGE BACKEND are both swappable, and they are independent of
 //  one another: any of the three metadata stores pairs with any of the three backends. Exactly one
@@ -61,11 +62,31 @@ var database = postgres.AddDatabase("media");
 // ─────────────────────────────────────────────────────────────────────────────
 //  The API
 // ─────────────────────────────────────────────────────────────────────────────
-builder.AddProject<Projects.SampleApp>("api")
+var api = builder.AddProject<Projects.SampleApp>("api")
     .WithReference(database)
     .WaitFor(database)
     // .WithReference(blobs).WaitFor(blobs)   // with the Azure backend active
     .WithHttpHealthCheck("/health")
+    .WithExternalHttpEndpoints();
+
+// ── Dashboard — clients/dashboard (Nuxt) ─────────────────────────────────────
+// npm install runs automatically before the dev server starts.
+builder.AddJavaScriptApp("dashboard", "../../clients/dashboard", "dev")
+    .WithNpm()
+    // Nuxt binds whatever PORT says; without this it picks its own and Aspire has no
+    // endpoint to publish, so the dashboard never gets a clickable URL.
+    .WithHttpEndpoint(env: "PORT")
+    .WithReference(api)
+    .WaitFor(api)
+    // Consumed by server/api/[...path].ts, which proxies the browser's calls — so the dashboard
+    // reaches the media endpoints and the sample's product endpoints through one origin.
+    .WithEnvironment("NUXT_MEDIA_API_URL", api.GetEndpoint("http"))
+    // The sidebar's "API reference" link. Read in the browser, so it needs the public URL.
+    .WithEnvironment("NUXT_PUBLIC_API_REFERENCE_URL",
+        ReferenceExpression.Create($"{api.GetEndpoint("http")}/scalar"))
+    // Must match MediaOptions.MaxFileSizeBytes in samples/SampleApp/Program.cs: the upload form
+    // refuses a larger file before sending it, rather than after a 413 comes back.
+    .WithEnvironment("NUXT_PUBLIC_MAX_UPLOAD_BYTES", "26214400")
     .WithExternalHttpEndpoints();
 
 builder.Build().Run();

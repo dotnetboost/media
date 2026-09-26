@@ -67,9 +67,15 @@ public sealed class InMemoryMediaStore : IMediaStore
 
         var matched = Filter(query);
 
-        matched = query.OldestFirst
-            ? matched.OrderBy(f => f.CreatedAt).ThenBy(f => f.Id)
-            : matched.OrderByDescending(f => f.CreatedAt).ThenByDescending(f => f.Id);
+        matched = (query.SortBy, query.Descending) switch
+        {
+            (MediaSortBy.FileName, true)  => matched.OrderByDescending(f => f.FileName, StringComparer.Ordinal).ThenByDescending(f => f.Id),
+            (MediaSortBy.FileName, false) => matched.OrderBy(f => f.FileName, StringComparer.Ordinal).ThenBy(f => f.Id),
+            (MediaSortBy.Size, true)      => matched.OrderByDescending(f => f.Size).ThenByDescending(f => f.Id),
+            (MediaSortBy.Size, false)     => matched.OrderBy(f => f.Size).ThenBy(f => f.Id),
+            (_, false)                    => matched.OrderBy(f => f.CreatedAt).ThenBy(f => f.Id),
+            _                             => matched.OrderByDescending(f => f.CreatedAt).ThenByDescending(f => f.Id)
+        };
 
         return Task.FromResult<IReadOnlyList<MediaFile>>(
             [.. matched.Skip(query.Skip).Take(query.Take).Select(Clone)]);
@@ -123,6 +129,9 @@ public sealed class InMemoryMediaStore : IMediaStore
 
         if (query.ContentTypePrefix is { } prefix)
             files = files.Where(f => f.ContentType.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+
+        if (query.Search is { Length: > 0 } search)
+            files = files.Where(f => f.FileName.Contains(search, StringComparison.OrdinalIgnoreCase));
 
         if (query.Tag is { } tag)
         {

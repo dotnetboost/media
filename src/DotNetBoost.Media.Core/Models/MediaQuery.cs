@@ -30,6 +30,18 @@ public sealed record MediaQuery
     public string? Tag { get; init; }
 
     /// <summary>
+    /// Only files whose name contains this, case-insensitively. A plain substring match on
+    /// <see cref="MediaFile.FileName"/> — what a search box in front of a media library needs, and
+    /// deliberately no more than that.
+    /// <para>
+    /// It cannot use an index, being an unanchored <c>LIKE</c>. That is acceptable for an
+    /// administrative search over a library of ordinary size, and not for a hot path on a large
+    /// one; there, put a full-text index on the column and query it yourself.
+    /// </para>
+    /// </summary>
+    public string? Search { get; init; }
+
+    /// <summary>
     /// Only files whose media type starts with this, so <c>image/</c> selects every image and
     /// <c>image/png</c> only PNGs.
     /// </summary>
@@ -79,8 +91,32 @@ public sealed record MediaQuery
         }
     }
 
-    /// <summary>Newest first (the default), or oldest first.</summary>
-    public bool OldestFirst { get; init; }
+    /// <summary>What to order by. Default: when the file was created.</summary>
+    public MediaSortBy SortBy { get; init; } = MediaSortBy.CreatedAt;
+
+    /// <summary>
+    /// Largest, latest or Z-to-A first. Default: <c>true</c>, which for the default
+    /// <see cref="SortBy"/> means newest first — the order a media library is nearly always
+    /// wanted in.
+    /// </summary>
+    public bool Descending { get; init; } = true;
+}
+
+/// <summary>
+/// What a listing is ordered by. Every value maps to an indexed or trivially sortable column;
+/// there is deliberately no "order by tag" or "order by owner", which would sort by a delimited
+/// string and a key that is not meant to be read.
+/// </summary>
+public enum MediaSortBy
+{
+    /// <summary>When the file was uploaded. The default.</summary>
+    CreatedAt,
+
+    /// <summary>The file's name, ordinally.</summary>
+    FileName,
+
+    /// <summary>The size of the stored bytes.</summary>
+    Size
 }
 
 /// <summary>One page of a listing, with the total behind it.</summary>

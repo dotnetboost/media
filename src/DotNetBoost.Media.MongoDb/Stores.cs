@@ -82,15 +82,9 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var sort = query.OldestFirst
-            // Id as a tiebreaker: two files created in the same tick would otherwise page
-            // unstably, repeating one document and skipping another.
-            ? Builders<MediaFile>.Sort.Ascending(f => f.CreatedAt).Ascending(f => f.Id)
-            : Builders<MediaFile>.Sort.Descending(f => f.CreatedAt).Descending(f => f.Id);
-
         var documents = await _collection
             .Find(Build(query))
-            .Sort(sort)
+            .Sort(Sort(query))
             .Skip(query.Skip)
             .Limit(query.Take)
             .ToListAsync(ct)
@@ -123,6 +117,25 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
                 Filter.Eq(f => f.DeletedAt, null)))
             .SortBy(f => f.CreatedAt)
             .FirstOrDefaultAsync(ct)!;
+    }
+
+    /// <summary>
+    /// A query's ordering. Every ordering ends on the id, so two documents that tie on the sort
+    /// field page stably rather than repeating one and skipping another.
+    /// </summary>
+    private static SortDefinition<MediaFile> Sort(MediaQuery query)
+    {
+        var sort = Builders<MediaFile>.Sort;
+
+        return (query.SortBy, query.Descending) switch
+        {
+            (MediaSortBy.FileName, true)  => sort.Descending(f => f.FileName).Descending(f => f.Id),
+            (MediaSortBy.FileName, false) => sort.Ascending(f => f.FileName).Ascending(f => f.Id),
+            (MediaSortBy.Size, true)      => sort.Descending(f => f.Size).Descending(f => f.Id),
+            (MediaSortBy.Size, false)     => sort.Ascending(f => f.Size).Ascending(f => f.Id),
+            (_, false)                    => sort.Ascending(f => f.CreatedAt).Ascending(f => f.Id),
+            _                             => sort.Descending(f => f.CreatedAt).Descending(f => f.Id)
+        };
     }
 
     /// <summary>
@@ -163,6 +176,15 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
             // metacharacters would match more than it should, and an unanchored one could not use
             // an index.
             filters.Add(Filter.Regex(f => f.ContentType, new MongoDB.Bson.BsonRegularExpression("^" + Regex.Escape(prefix))));
+        }
+
+        if (query.Search is { Length: > 0 } search)
+        {
+            // Unanchored and case-insensitive, and the caller's value escaped so that a search for
+            // "report.final" does not treat the dot as "any character".
+            filters.Add(Filter.Regex(
+                f => f.FileName,
+                new MongoDB.Bson.BsonRegularExpression(Regex.Escape(search), "i")));
         }
 
         if (query.Tag is { } tag)

@@ -245,8 +245,10 @@ namespace Microsoft.Extensions.DependencyInjection
             string? tag = null,
             string? contentType = null,
             string? uploadedBy = null,
+            string? search = null,
             bool includeDeleted = false,
-            bool oldestFirst = false,
+            string? sortBy = null,
+            bool descending = true,
             int skip = 0,
             int take = 50)
         {
@@ -258,8 +260,10 @@ namespace Microsoft.Extensions.DependencyInjection
                 Tag               = tag,
                 ContentTypePrefix = contentType,
                 UploadedBy        = uploadedBy,
+                Search            = search,
                 IncludeDeleted    = includeDeleted,
-                OldestFirst       = oldestFirst,
+                SortBy            = ParseSortBy(sortBy),
+                Descending        = descending,
                 Skip              = Math.Max(0, skip),
                 Take              = Math.Clamp(take, 1, MediaQuery.MaxTake)
             }, ct);
@@ -353,6 +357,18 @@ namespace Microsoft.Extensions.DependencyInjection
             await media.DeleteAsync(id, ct)
                 ? TypedResults.NoContent()
                 : TypedResults.NotFound();
+
+        /// <summary>
+        /// The <c>sortBy</c> query value. An unrecognised one falls back to the default rather
+        /// than failing the request: a listing is a read, and a typo in a query string should not
+        /// turn it into an error page.
+        /// </summary>
+        private static MediaSortBy ParseSortBy(string? value) => value?.Trim().ToUpperInvariant() switch
+        {
+            "FILENAME" or "NAME" => MediaSortBy.FileName,
+            "SIZE"               => MediaSortBy.Size,
+            _                    => MediaSortBy.CreatedAt
+        };
 
         /// <summary>Splits the comma-separated <c>tags</c> form field. <c>null</c> when it was not sent.</summary>
         private static string[]? ParseTags(string? tags) =>
