@@ -171,8 +171,8 @@ public interface IMediaAccessor
 
     /// <summary>
     /// Every live file attached to this entity, in the order the entity put them in: by role, then
-    /// by <see cref="MediaAttachment.SortOrder"/>. A file attached under two roles is returned
-    /// once, at its first one.
+    /// by <see cref="MediaAttachment.SortOrder"/>. A file attached under two roles is returned once,
+    /// at its lowest role and position.
     /// </summary>
     Task<IReadOnlyList<MediaFileInfo>> ListAsync(CancellationToken ct = default);
 

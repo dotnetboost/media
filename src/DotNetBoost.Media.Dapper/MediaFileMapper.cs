@@ -53,8 +53,6 @@ internal static class MediaFileMapper
         StorageContainer = row.GetString(o.StorageContainer),
         StoragePath      = row.GetString(o.StoragePath),
         Checksum         = NullableString(row, o.Checksum),
-        OwnerEntityName  = NullableString(row, o.OwnerEntityName),
-        OwnerEntityId    = NullableString(row, o.OwnerEntityId),
         Category         = NullableString(row, o.Category),
         Tags             = NullableString(row, o.Tags),
         Metadata         = NullableString(row, o.Metadata),
@@ -68,7 +66,7 @@ internal static class MediaFileMapper
     /// The id, whether the engine hands back a <see cref="System.Guid"/> (SQL Server's
     /// <c>uniqueidentifier</c>, PostgreSQL's <c>uuid</c>) or text (SQLite).
     /// </summary>
-    private static Guid Guid(DbDataReader row, int ordinal)
+    internal static Guid Guid(DbDataReader row, int ordinal)
     {
         var value = row.GetValue(ordinal);
 
@@ -91,7 +89,7 @@ internal static class MediaFileMapper
     /// serializes to JSON without a "Z" and is then read by every client as local time.
     /// </para>
     /// </summary>
-    private static DateTime? Utc(DbDataReader row, int ordinal)
+    internal static DateTime? Utc(DbDataReader row, int ordinal)
     {
         if (row.IsDBNull(ordinal))
             return null;
@@ -134,8 +132,6 @@ internal static class MediaFileMapper
             StorageContainer = row.GetOrdinal(nameof(MediaFile.StorageContainer));
             StoragePath      = row.GetOrdinal(nameof(MediaFile.StoragePath));
             Checksum         = row.GetOrdinal(nameof(MediaFile.Checksum));
-            OwnerEntityName  = row.GetOrdinal(nameof(MediaFile.OwnerEntityName));
-            OwnerEntityId    = row.GetOrdinal(nameof(MediaFile.OwnerEntityId));
             Category         = row.GetOrdinal(nameof(MediaFile.Category));
             Tags             = row.GetOrdinal(nameof(MediaFile.Tags));
             Metadata         = row.GetOrdinal(nameof(MediaFile.Metadata));
@@ -153,8 +149,6 @@ internal static class MediaFileMapper
         public int StorageContainer { get; }
         public int StoragePath { get; }
         public int Checksum { get; }
-        public int OwnerEntityName { get; }
-        public int OwnerEntityId { get; }
         public int Category { get; }
         public int Tags { get; }
         public int Metadata { get; }
@@ -162,5 +156,60 @@ internal static class MediaFileMapper
         public int CreatedAt { get; }
         public int UpdatedAt { get; }
         public int DeletedAt { get; }
+    }
+}
+
+/// <summary>
+/// Reads a <see cref="MediaAttachment"/> out of a data reader, column by column, for the same
+/// reason <see cref="MediaFileMapper"/> does it by hand: SQLite returns the ids as text and the
+/// timestamp as text, and a global Dapper type handler would change how every Guid in the
+/// application is read.
+/// </summary>
+internal static class MediaAttachmentMapper
+{
+    /// <summary>Reads every row the reader has left.</summary>
+    public static async Task<List<MediaAttachment>> ReadAllAsync(DbDataReader reader, CancellationToken ct)
+    {
+        var ordinals = new Ordinals(reader);
+        var rows     = new List<MediaAttachment>();
+
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+            rows.Add(Read(reader, ordinals));
+
+        return rows;
+    }
+
+    private static MediaAttachment Read(DbDataReader row, Ordinals o) => new()
+    {
+        Id              = MediaFileMapper.Guid(row, o.Id),
+        MediaFileId     = MediaFileMapper.Guid(row, o.MediaFileId),
+        OwnerEntityName = row.GetString(o.OwnerEntityName),
+        OwnerEntityId   = row.GetString(o.OwnerEntityId),
+        Role            = row.GetString(o.Role),
+        SortOrder       = row.GetInt32(o.SortOrder),
+        CreatedAt       = MediaFileMapper.Utc(row, o.CreatedAt)!.Value
+    };
+
+    /// <summary>Column positions, resolved once per reader.</summary>
+    private sealed class Ordinals
+    {
+        public Ordinals(DbDataReader row)
+        {
+            Id              = row.GetOrdinal(nameof(MediaAttachment.Id));
+            MediaFileId     = row.GetOrdinal(nameof(MediaAttachment.MediaFileId));
+            OwnerEntityName = row.GetOrdinal(nameof(MediaAttachment.OwnerEntityName));
+            OwnerEntityId   = row.GetOrdinal(nameof(MediaAttachment.OwnerEntityId));
+            Role            = row.GetOrdinal(nameof(MediaAttachment.Role));
+            SortOrder       = row.GetOrdinal(nameof(MediaAttachment.SortOrder));
+            CreatedAt       = row.GetOrdinal(nameof(MediaAttachment.CreatedAt));
+        }
+
+        public int Id { get; }
+        public int MediaFileId { get; }
+        public int OwnerEntityName { get; }
+        public int OwnerEntityId { get; }
+        public int Role { get; }
+        public int SortOrder { get; }
+        public int CreatedAt { get; }
     }
 }

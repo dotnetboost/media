@@ -95,8 +95,11 @@ public sealed class EfCoreTests : IAsyncLifetime
 
         var file = await _media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        Assert.Equal("Product", file.OwnerEntityName);
-        Assert.Equal(product.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), file.OwnerEntityId);
+        var attachment = Assert.Single(await _media.GetAttachmentsAsync(file.Id));
+        Assert.Equal("Product", attachment.Owner.EntityName);
+        Assert.Equal(
+            product.Id.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            attachment.Owner.EntityId);
     }
 
     [Fact]
@@ -112,8 +115,9 @@ public sealed class EfCoreTests : IAsyncLifetime
         // with it, and refusing would fail an attach that works perfectly well.
         var file = await _media.For(new PlainThing { Id = 5 }).UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        Assert.Equal("PlainThing", file.OwnerEntityName);
-        Assert.Equal("5", file.OwnerEntityId);
+        var attachment = Assert.Single(await _media.GetAttachmentsAsync(file.Id));
+        Assert.Equal("PlainThing", attachment.Owner.EntityName);
+        Assert.Equal("5", attachment.Owner.EntityId);
     }
 
     [Fact]

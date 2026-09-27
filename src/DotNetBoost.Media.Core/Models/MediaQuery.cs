@@ -146,8 +146,10 @@ public enum MediaSortBy
     /// <see cref="MediaAttachment.SortOrder"/>. Requires an owner filter, since it sorts on the
     /// attachment rather than on the file — rejected without one rather than quietly ignored.
     /// <para>
-    /// A file attached to the entity under several roles sorts by its first one, so that a file
-    /// appearing once in the results also has one position in them.
+    /// A file the entity attached under several roles sorts by its lowest role and its lowest
+    /// position, so that a file appearing once in the results also has one position in them. With
+    /// <see cref="MediaQuery.Role"/> set — the ordering anyone actually wants, one role's gallery — the role is
+    /// fixed and this is exactly that role's <see cref="MediaAttachment.SortOrder"/>.
     /// </para>
     /// </summary>
     SortOrder

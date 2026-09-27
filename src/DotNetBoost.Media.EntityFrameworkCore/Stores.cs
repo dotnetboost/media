@@ -8,9 +8,10 @@ using Microsoft.EntityFrameworkCore;
 namespace DotNetBoost.Media.EntityFrameworkCore;
 
 /// <summary>
-/// Keeps media rows in the application's own <see cref="DbContext"/>, which is what lets an
-/// upload and the entity it belongs to be saved in one transaction: both go through the same
-/// context, and the application's <c>SaveChangesAsync</c> is the one that commits.
+/// Keeps media rows and the attachments linking them to entities in the application's own
+/// <see cref="DbContext"/>, which is what lets an upload and the entity it belongs to be saved in
+/// one transaction: both go through the same context, and the application's
+/// <c>SaveChangesAsync</c> is the one that commits.
 /// <para>
 /// Nothing here calls <c>SaveChanges</c> on its own except the writes the engine needs to be
 /// durable immediately — an upload's row, which must exist before the method returns, since its
@@ -168,8 +169,183 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             .FirstOrDefaultAsync(ct);
     }
 
+    /// <inheritdoc/>
+    public async Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        _context.Set<MediaAttachment>().Add(attachment);
+
+        try
+        {
+            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateException ex)
+        {
+            _context.Entry(attachment).State = EntityState.Detached;
+
+            // Only the uniqueness of (file, owner, role) is a conflict, and it is asked as a query
+            // for the same reason the file insert asks: this assembly references no provider, so a
+            // unique violation reaches it only as the provider's own error code. Anything else — a
+            // missing table, a dropped connection — is reported as itself rather than as a 409 no
+            // retry can clear.
+            if (!await AttachmentExistsAsync(attachment, ct).ConfigureAwait(false))
+                throw;
+
+            throw new MediaConflictException(
+                $"Media file '{attachment.MediaFileId}' is already attached to {attachment.OwnerEntityName} " +
+                $"{attachment.OwnerEntityId} as '{attachment.Role}'.",
+                ex);
+        }
+    }
+
+    /// <summary>
+    /// Whether that exact link is already there, asked after an insert has failed. A probe that
+    /// cannot run answers false, leaving the original write error to stand.
+    /// </summary>
+    private async Task<bool> AttachmentExistsAsync(MediaAttachment attachment, CancellationToken ct)
+    {
+        try
+        {
+            return await _context.Set<MediaAttachment>()
+                .AsNoTracking()
+                .AnyAsync(
+                    a => a.MediaFileId == attachment.MediaFileId
+                         && a.OwnerEntityName == attachment.OwnerEntityName
+                         && a.OwnerEntityId == attachment.OwnerEntityId
+                         && a.Role == attachment.Role,
+                    ct)
+                .ConfigureAwait(false);
+        }
+        catch (DbException)
+        {
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default)
+    {
+        var attachment = await _context.Set<MediaAttachment>()
+            .FirstOrDefaultAsync(a => a.Id == attachmentId, ct)
+            .ConfigureAwait(false);
+
+        if (attachment is null)
+            return false;
+
+        _context.Set<MediaAttachment>().Remove(attachment);
+        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var doomed = await _context.Set<MediaAttachment>()
+            .Where(a => a.OwnerEntityName == owner.EntityName && a.OwnerEntityId == owner.EntityId)
+            .Where(a => role == null || a.Role == role)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return await RemoveRangeAsync(doomed, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default)
+    {
+        var doomed = await _context.Set<MediaAttachment>()
+            .Where(a => a.MediaFileId == mediaFileId)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return await RemoveRangeAsync(doomed, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Removes a set of links in one SaveChanges. Loaded and removed rather than deleted in bulk by
+    /// ExecuteDelete, because this store shares the application's context: ExecuteDelete runs
+    /// outside the change tracker and outside any transaction the application has open, which would
+    /// make "delete the entity and its media together" stop being one unit of work.
+    /// </summary>
+    private async Task<int> RemoveRangeAsync(List<MediaAttachment> doomed, CancellationToken ct)
+    {
+        if (doomed.Count == 0)
+            return 0;
+
+        _context.Set<MediaAttachment>().RemoveRange(doomed);
+        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        return doomed.Count;
+    }
+
+    /// <inheritdoc/>
+    public async Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        if (_context.Entry(attachment).State == EntityState.Detached)
+            _context.Set<MediaAttachment>().Update(attachment);
+
+        try
+        {
+            var written = await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            if (written == 0 && !await AttachmentExistsAsync(attachment.Id, ct).ConfigureAwait(false))
+                throw new MediaNotFoundException(attachment.Id);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            _context.Entry(attachment).State = EntityState.Detached;
+            throw new MediaNotFoundException(attachment.Id) { Source = ex.Source };
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
+        Guid mediaFileId, CancellationToken ct = default) =>
+        await _context.Set<MediaAttachment>()
+            .Where(a => a.MediaFileId == mediaFileId)
+            .OrderBy(a => a.CreatedAt).ThenBy(a => a.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default) =>
+        await _context.Set<MediaAttachment>()
+            .Where(a => a.OwnerEntityName == owner.EntityName && a.OwnerEntityId == owner.EntityId)
+            .Where(a => role == null || a.Role == role)
+            .OrderBy(a => a.Role).ThenBy(a => a.SortOrder).ThenBy(a => a.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaFileIds);
+
+        if (mediaFileIds.Count == 0)
+            return new HashSet<Guid>();
+
+        // One statement for the whole set. The alternative — asking per file whether anyone else
+        // holds it — turns deleting a product with fifty images into fifty round trips.
+        var shared = await _context.Set<MediaAttachment>()
+            .Where(a => mediaFileIds.Contains(a.MediaFileId))
+            .Where(a => a.OwnerEntityName != excluding.EntityName || a.OwnerEntityId != excluding.EntityId)
+            .Select(a => a.MediaFileId)
+            .Distinct()
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return shared.ToHashSet();
+    }
+
     private Task<bool> ExistsAsync(Guid id, CancellationToken ct) =>
         _context.Set<MediaFile>().AnyAsync(f => f.Id == id, ct);
+
+    private Task<bool> AttachmentExistsAsync(Guid id, CancellationToken ct) =>
+        _context.Set<MediaAttachment>().AnyAsync(a => a.Id == id, ct);
 
     /// <summary>
     /// Applies a <see cref="MediaQuery"/> to a queryable. Shared by the page and the count so the
@@ -180,8 +356,28 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
     /// Applies a query's ordering. Every ordering ends on the id, so two rows that tie on the sort
     /// column page stably rather than repeating one and skipping another.
     /// </summary>
-    private static IQueryable<MediaFile> Sort(IQueryable<MediaFile> files, MediaQuery query) =>
-        (query.SortBy, query.Descending) switch
+    private IQueryable<MediaFile> Sort(IQueryable<MediaFile> files, MediaQuery query)
+    {
+        // The entity's own order lives on the attachment, so the key is two correlated subqueries
+        // over the links this query matched: the lowest role, then the lowest position. Narrowed to
+        // one role — the ordering anyone actually asks for — the first is constant and this is
+        // simply that role's SortOrder.
+        if (query.SortBy == MediaSortBy.SortOrder)
+        {
+            var attachments = Attachments(query);
+
+            return query.Descending
+                ? files
+                    .OrderByDescending(f => attachments.Where(a => a.MediaFileId == f.Id).Min(a => a.Role))
+                    .ThenByDescending(f => attachments.Where(a => a.MediaFileId == f.Id).Min(a => a.SortOrder))
+                    .ThenByDescending(f => f.Id)
+                : files
+                    .OrderBy(f => attachments.Where(a => a.MediaFileId == f.Id).Min(a => a.Role))
+                    .ThenBy(f => attachments.Where(a => a.MediaFileId == f.Id).Min(a => a.SortOrder))
+                    .ThenBy(f => f.Id);
+        }
+
+        return (query.SortBy, query.Descending) switch
         {
             (MediaSortBy.FileName, true)  => files.OrderByDescending(f => f.FileName).ThenByDescending(f => f.Id),
             (MediaSortBy.FileName, false) => files.OrderBy(f => f.FileName).ThenBy(f => f.Id),
@@ -190,6 +386,28 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             (_, false)                    => files.OrderBy(f => f.CreatedAt).ThenBy(f => f.Id),
             _                             => files.OrderByDescending(f => f.CreatedAt).ThenByDescending(f => f.Id)
         };
+    }
+
+    /// <summary>
+    /// The attachments a query's owner filter matches, as a queryable the file query correlates
+    /// against. Composed once so the join and the ordering cannot disagree about which links they
+    /// are talking about.
+    /// </summary>
+    private IQueryable<MediaAttachment> Attachments(MediaQuery query)
+    {
+        var attachments = _context.Set<MediaAttachment>().AsQueryable();
+
+        if (query.OwnerEntityName is { } ownerName)
+            attachments = attachments.Where(a => a.OwnerEntityName == ownerName);
+
+        if (query.OwnerEntityId is { } ownerId)
+            attachments = attachments.Where(a => a.OwnerEntityId == ownerId);
+
+        if (query.Role is { } role)
+            attachments = attachments.Where(a => a.Role == role);
+
+        return attachments;
+    }
 
     /// <summary>
     /// Neutralises the wildcards in a value used inside a LIKE. Escaping the escape character
@@ -200,16 +418,28 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
         .Replace("%", "\\%", StringComparison.Ordinal)
         .Replace("_", "\\_", StringComparison.Ordinal);
 
-    private static IQueryable<MediaFile> Filter(IQueryable<MediaFile> files, MediaQuery query)
+    private IQueryable<MediaFile> Filter(IQueryable<MediaFile> files, MediaQuery query)
     {
         if (!query.IncludeDeleted)
             files = files.Where(f => f.DeletedAt == null);
 
-        if (query.OwnerEntityName is { } ownerName)
-            files = files.Where(f => f.OwnerEntityName == ownerName);
+        // The join, as EXISTS rather than a JOIN: a file linked to nine of this entity's roles must
+        // come back once, and EXISTS says that without a DISTINCT over every selected column.
+        //
+        // Only when an owner is asked for. An unfiltered listing never touches the attachment table
+        // at all, which is what keeps unattached files — uploads waiting for the form that will
+        // claim them — in the library rather than quietly out of it.
+        if (query.OwnerEntityName is not null)
+        {
+            var attachments = Attachments(query);
+            files = files.Where(f => attachments.Any(a => a.MediaFileId == f.Id));
+        }
 
-        if (query.OwnerEntityId is { } ownerId)
-            files = files.Where(f => f.OwnerEntityId == ownerId);
+        if (query.Unattached)
+        {
+            var all = _context.Set<MediaAttachment>();
+            files = files.Where(f => !all.Any(a => a.MediaFileId == f.Id));
+        }
 
         if (query.Category is { } category)
             files = files.Where(f => f.Category == category);

@@ -4,8 +4,8 @@ using System.Data;
 namespace DotNetBoost.Media.Dapper;
 
 /// <summary>
-/// Every statement the store issues, spelled for one dialect and one table name. Built once per
-/// (dialect, schema, table) and cached: the store is scoped, so composing a dozen strings in each
+/// Every statement the store issues, spelled for one dialect and one pair of table names. Built
+/// once per (dialect, schema, tables) and cached: the store is scoped, so composing a dozen strings in each
 /// constructor would be per-request work for a result that never varies.
 /// </summary>
 internal sealed class DapperStatements
@@ -15,15 +15,23 @@ internal sealed class DapperStatements
     /// <summary>Every column, in a fixed order, so INSERT and SELECT cannot disagree.</summary>
     internal const string ColumnList =
         "Id, FileName, ContentType, Size, StorageProvider, StorageContainer, StoragePath, Checksum, " +
-        "OwnerEntityName, OwnerEntityId, Category, Tags, Metadata, UploadedBy, CreatedAt, UpdatedAt, DeletedAt";
+        "Category, Tags, Metadata, UploadedBy, CreatedAt, UpdatedAt, DeletedAt";
+
+    /// <summary>Every attachment column, in a fixed order, for the same reason.</summary>
+    internal const string AttachmentColumnList =
+        "Id, MediaFileId, OwnerEntityName, OwnerEntityId, Role, SortOrder, CreatedAt";
 
     private DapperStatements(SqlDialect dialect, DapperOptions options)
     {
-        Dialect = dialect;
-        Table   = Qualify(dialect, options.Schema, options.MediaFilesTable);
+        Dialect         = dialect;
+        Table           = Qualify(dialect, options.Schema, options.MediaFilesTable);
+        AttachmentTable = Qualify(dialect, options.Schema, options.MediaAttachmentsTable);
 
         var columns = string.Join(", ", ColumnList.Split(',', StringSplitOptions.TrimEntries).Select(c => Quote(dialect, c)));
         var values  = string.Join(", ", ColumnList.Split(',', StringSplitOptions.TrimEntries).Select(c => "@" + c));
+
+        var attachmentColumns = string.Join(", ", AttachmentColumnList.Split(',', StringSplitOptions.TrimEntries).Select(c => Quote(dialect, c)));
+        var attachmentValues  = string.Join(", ", AttachmentColumnList.Split(',', StringSplitOptions.TrimEntries).Select(c => "@" + c));
 
         string C(string column) => Quote(dialect, column);
 
@@ -36,7 +44,6 @@ internal sealed class DapperStatements
         Update =
             $"UPDATE {Table} SET " +
             $"{C("FileName")} = @FileName, {C("ContentType")} = @ContentType, " +
-            $"{C("OwnerEntityName")} = @OwnerEntityName, {C("OwnerEntityId")} = @OwnerEntityId, " +
             $"{C("Category")} = @Category, {C("Tags")} = @Tags, {C("Metadata")} = @Metadata, " +
             $"{C("UpdatedAt")} = @UpdatedAt, {C("DeletedAt")} = @DeletedAt " +
             $"WHERE {C("Id")} = @Id";
@@ -46,10 +53,37 @@ internal sealed class DapperStatements
         SelectByChecksum =
             $"{Select}WHERE {C("Checksum")} = @Checksum AND {C("Size")} = @Size AND {C("DeletedAt")} IS NULL " +
             $"ORDER BY {C("CreatedAt")} {Limit(dialect, 1)}";
+
+        InsertAttachment = $"INSERT INTO {AttachmentTable} ({attachmentColumns}) VALUES ({attachmentValues})";
+
+        SelectAttachments = $"SELECT {attachmentColumns} FROM {AttachmentTable} ";
+
+        SelectAttachmentsOfFile =
+            $"{SelectAttachments}WHERE {C("MediaFileId")} = @MediaFileId " +
+            $"ORDER BY {C("CreatedAt")} ASC, {C("Id")} ASC";
+
+        SelectAttachmentById = $"{SelectAttachments}WHERE {C("Id")} = @Id";
+
+        UpdateAttachment =
+            $"UPDATE {AttachmentTable} SET " +
+            $"{C("Role")} = @Role, {C("SortOrder")} = @SortOrder " +
+            $"WHERE {C("Id")} = @Id";
+
+        DeleteAttachment = $"DELETE FROM {AttachmentTable} WHERE {C("Id")} = @Id";
+
+        DeleteAttachmentsOfFile = $"DELETE FROM {AttachmentTable} WHERE {C("MediaFileId")} = @MediaFileId";
+
+        // The owner predicate, reused by the listing, the bulk delete, the EXISTS behind an
+        // owner-filtered file query and the subqueries that order one. Written once so a filter and
+        // the count or the ordering beside it cannot disagree about which links they mean.
+        OwnerPredicate = $"{C("OwnerEntityName")} = @OwnerEntityName AND {C("OwnerEntityId")} = @OwnerEntityId";
+
+        RolePredicate = $"{C("Role")} = @Role";
     }
 
     public SqlDialect Dialect { get; }
     public string Table { get; }
+    public string AttachmentTable { get; }
 
     public string Insert { get; }
     public string Select { get; }
@@ -58,9 +92,19 @@ internal sealed class DapperStatements
     public string Delete { get; }
     public string SelectByChecksum { get; }
 
+    public string InsertAttachment { get; }
+    public string SelectAttachments { get; }
+    public string SelectAttachmentsOfFile { get; }
+    public string SelectAttachmentById { get; }
+    public string UpdateAttachment { get; }
+    public string DeleteAttachment { get; }
+    public string DeleteAttachmentsOfFile { get; }
+    public string OwnerPredicate { get; }
+    public string RolePredicate { get; }
+
     public static DapperStatements For(SqlDialect dialect, DapperOptions options) =>
         Cache.GetOrAdd(
-            (dialect, options.Schema, options.MediaFilesTable),
+            (dialect, options.Schema, options.MediaFilesTable + "|" + options.MediaAttachmentsTable),
             static (_, state) => new DapperStatements(state.Dialect, state.Options),
             (Dialect: dialect, Options: options));
 

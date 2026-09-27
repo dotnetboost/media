@@ -246,32 +246,21 @@ public sealed class InMemoryMediaStore : IMediaStore
     }
 
     /// <summary>
-    /// Each matched file's position in the owner's order, as (role, sort order). The lowest one
-    /// wins, so a file attached twice to the same entity still has a single place in the results.
+    /// Each matched file's position in the owner's order: its lowest role, then its lowest position.
+    /// A file the entity attached twice therefore still has a single place in the results.
+    /// <para>
+    /// The two minima are taken independently rather than as the pair belonging to the lowest role,
+    /// because that is what the relational stores can express — the pair would need a correlated
+    /// subquery ordered and limited inside an ORDER BY. The two agree wherever it matters: narrowed
+    /// to one role, which is the ordering anyone asks for, there is only one row per file.
+    /// </para>
     /// </summary>
-    private Dictionary<Guid, (string Role, int SortOrder)> OrderingKeys(MediaQuery query)
-    {
-        var keys = new Dictionary<Guid, (string Role, int SortOrder)>();
-
-        foreach (var attachment in Matching(query))
-        {
-            var key = (attachment.Role, attachment.SortOrder);
-
-            if (!keys.TryGetValue(attachment.MediaFileId, out var existing)
-                || Compare(key, existing) < 0)
-            {
-                keys[attachment.MediaFileId] = key;
-            }
-        }
-
-        return keys;
-
-        static int Compare((string Role, int SortOrder) left, (string Role, int SortOrder) right)
-        {
-            var byRole = string.CompareOrdinal(left.Role, right.Role);
-            return byRole != 0 ? byRole : left.SortOrder.CompareTo(right.SortOrder);
-        }
-    }
+    private Dictionary<Guid, (string Role, int SortOrder)> OrderingKeys(MediaQuery query) =>
+        Matching(query)
+            .GroupBy(a => a.MediaFileId)
+            .ToDictionary(
+                g => g.Key,
+                g => (Role: g.Select(a => a.Role).Min(StringComparer.Ordinal)!, SortOrder: g.Min(a => a.SortOrder)));
 
     private IEnumerable<MediaFile> Filter(MediaQuery query)
     {
