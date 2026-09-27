@@ -83,10 +83,12 @@
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
     <PackageVersion Include="Testcontainers.MsSql" Version="4.15.0" />
     <PackageVersion Include="Testcontainers.MongoDb" Version="4.15.0" />
-    <!-- Azurite is Microsoft's Blob Storage emulator; MinIO speaks the S3 API. Between them the
-         two cloud backends are tested against a real server rather than a mock. -->
+    <!-- Azurite is Microsoft's Blob Storage emulator; LocalStack speaks the S3 API. Between them
+         the two cloud backends are tested against a real server rather than a mock. LocalStack
+         rather than MinIO because MinIO no longer publishes an anonymously pullable image to
+         Docker Hub or quay.io, so a MinIO-based suite cannot restore its own container. -->
     <PackageVersion Include="Testcontainers.Azurite" Version="4.15.0" />
-    <PackageVersion Include="Testcontainers.Minio" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers.LocalStack" Version="4.15.0" />
     <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.6" />
   </ItemGroup>
 

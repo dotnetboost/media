@@ -39,8 +39,8 @@ dotnetboost-media/
 - .NET 8 runtime — the libraries and most test projects multi-target `net8.0`, so the net8.0
   test pass needs it.
 - Docker — for `IntegrationTests`, which start real PostgreSQL, SQL Server and MongoDB servers
-  plus Azurite and MinIO for the two cloud storage backends, and for running the sample through
-  the Aspire AppHost.
+  plus Azurite and LocalStack for the two cloud storage backends, and for running the sample
+  through the Aspire AppHost.
 
 ## Building and testing
 
@@ -80,7 +80,7 @@ public member of a shipped package needs XML docs.
   including the in-memory double the other suites rely on — is held to it, on SQLite locally and
   on PostgreSQL, SQL Server and MongoDB in CI.
 - **A backend change needs a contract test.** Add it to `StorageContractTests`, which runs against
-  Azurite and MinIO. A mocked cloud SDK proves only that the mock matches the test.
+  Azurite and LocalStack. A mocked cloud SDK proves only that the mock matches the test.
 - **The dashboard has one browser, not two.** `clients/dashboard` shows the media library on its
   own page and inside the products page's picker modal, and both render the same
   `components/media/Browser.vue`. A feature added to one must not be a feature added to a copy.

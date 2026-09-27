@@ -26,9 +26,13 @@ public sealed class PostgreSqlEfCoreTests(PostgreSqlFixture fixture) : StoreInte
 
     protected override async Task<IMediaStore> CreateStoreAsync()
     {
+        // Its own database in the shared server, not the one the Dapper suite writes to. See
+        // PostgreSqlFixture.CreateDatabaseAsync: EnsureCreated skips a database that already has
+        // tables, so sharing left MediaFiles uncreated whenever Dapper ran first.
+        var connectionString = await fixture.CreateDatabaseAsync("media_efcore");
+
         _context = new IntegrationContext(new DbContextOptionsBuilder<IntegrationContext>()
-            .UseNpgsql(fixture.ConnectionString, o => o.MigrationsHistoryTable("__media_test"))
-            // A schema per test, so tests in the same class do not see each other's rows.
+            .UseNpgsql(connectionString, o => o.MigrationsHistoryTable("__media_test"))
             .Options);
 
         await _context.Database.EnsureCreatedAsync();
@@ -125,8 +129,11 @@ public sealed class SqlServerEfCoreTests(SqlServerFixture fixture) : StoreIntegr
 
     protected override async Task<IMediaStore> CreateStoreAsync()
     {
+        // Its own database rather than master, for the reason PostgreSqlEfCoreTests uses one.
+        var connectionString = await fixture.CreateDatabaseAsync("media_efcore");
+
         _context = new IntegrationContext(new DbContextOptionsBuilder<IntegrationContext>()
-            .UseSqlServer(fixture.ConnectionString)
+            .UseSqlServer(connectionString)
             .Options);
 
         await _context.Database.EnsureCreatedAsync();

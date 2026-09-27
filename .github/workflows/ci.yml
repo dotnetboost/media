@@ -167,7 +167,7 @@ jobs:
 
       # ubuntu-latest ships with a running Docker daemon, which Testcontainers uses to start
       # real servers for these tests: SQL Server, PostgreSQL and MongoDB for the metadata stores,
-      # Azurite and MinIO for the two cloud storage backends. The backends are the reason this
+      # Azurite and LocalStack for the two cloud storage backends. The backends are the reason this
       # job matters most — a mocked cloud SDK proves only that the mock matches the test.
       - name: Run integration tests against real databases
         run: |

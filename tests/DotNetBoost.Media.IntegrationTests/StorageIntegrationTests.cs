@@ -10,13 +10,13 @@ using DotNetBoost.Media.TestSupport;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Testcontainers.Azurite;
-using Testcontainers.Minio;
+using Testcontainers.LocalStack;
 
 namespace DotNetBoost.Media.IntegrationTests;
 
 /// <summary>
 /// The behaviour every <see cref="IMediaStorageProvider"/> has to have, run against a real server
-/// for each of them — Azurite for Azure Blob Storage, MinIO for S3. Mocking a cloud SDK proves
+/// for each of them — Azurite for Azure Blob Storage, LocalStack for S3. Mocking a cloud SDK proves
 /// only that the mock was written to match the test; these run the same bytes through the same
 /// wire protocol the production backend uses.
 /// </summary>
@@ -157,12 +157,17 @@ public sealed class AzureBlobStorageTests : StorageContractTests, IAsyncLifetime
     protected override Task CleanupAsync() => _container.DisposeAsync().AsTask();
 }
 
-/// <summary>The contract, against MinIO — an S3-compatible server.</summary>
+/// <summary>
+/// The contract, against LocalStack — an S3-compatible server. LocalStack rather than MinIO
+/// because MinIO stopped publishing an anonymously pullable image: both <c>minio/minio</c> on
+/// Docker Hub and <c>quay.io/minio/minio</c> answer 401 without credentials, so a MinIO-based
+/// suite fails at the pull on any machine not logged in to them, CI included.
+/// </summary>
 public sealed class AmazonS3StorageTests : StorageContractTests, IAsyncLifetime
 {
     private const string Bucket = "media";
 
-    private readonly MinioContainer _container = new MinioBuilder("minio/minio:latest").Build();
+    private readonly LocalStackContainer _container = new LocalStackBuilder("localstack/localstack:4").Build();
     private AmazonS3Client? _client;
 
     protected override bool MintsUrls => true;
@@ -172,11 +177,14 @@ public sealed class AmazonS3StorageTests : StorageContractTests, IAsyncLifetime
         await _container.StartAsync();
 
         _client = new AmazonS3Client(
-            new Amazon.Runtime.BasicAWSCredentials(_container.GetAccessKey(), _container.GetSecretKey()),
+            // LocalStack verifies nothing beyond the request being signed, so any non-empty pair
+            // works; these are the ones its own documentation uses. Unlike MinIO's module, the
+            // LocalStack one exposes no keys of its own to read.
+            new Amazon.Runtime.BasicAWSCredentials("test", "test"),
             new AmazonS3Config
             {
                 ServiceURL     = _container.GetConnectionString(),
-                // MinIO serves buckets as a path, not a subdomain, so virtual-hosted-style
+                // LocalStack serves buckets as a path, not a subdomain, so virtual-hosted-style
                 // addressing would resolve to a host that does not exist.
                 ForcePathStyle = true,
                 AuthenticationRegion = "us-east-1"
@@ -212,8 +220,12 @@ public sealed class EndToEndTests(PostgreSqlFixture postgres) : IAsyncLifetime
     {
         await _azurite.StartAsync();
 
+        // Its own database, for the reason PostgreSqlEfCoreTests uses one — and a separate one
+        // from that suite's, whose per-test TRUNCATE would otherwise carry off this row.
+        var connectionString = await postgres.CreateDatabaseAsync("media_end_to_end");
+
         _context = new IntegrationContext(new DbContextOptionsBuilder<IntegrationContext>()
-            .UseNpgsql(postgres.ConnectionString)
+            .UseNpgsql(connectionString)
             .Options);
 
         await _context.Database.EnsureCreatedAsync();

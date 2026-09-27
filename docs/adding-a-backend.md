@@ -115,7 +115,7 @@ Without a `Use…()` method of your own:
 ## Testing it
 
 Derive from `StorageContractTests` in `DotNetBoost.Media.IntegrationTests` and point it at a real
-server — a container, ideally, as Azurite and MinIO are used for the two that ship. The suite
+server — a container, ideally, as Azurite and LocalStack are used for the two that ship. The suite
 covers round-tripping, multipart-sized uploads, missing paths, deletion semantics, path traversal,
 and whether a minted URL is one an unauthenticated client can actually fetch.
 
