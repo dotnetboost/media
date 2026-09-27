@@ -134,8 +134,10 @@ app.MapPost("/api/products/{id:int}/images", async (
     return Results.Created($"/api/media/{uploaded.Id}", uploaded.Id);
 }).DisableAntiforgery();
 
-// Deleting a product takes its files with it. Nothing in the database refers to a media row — that
-// is what lets one table serve every entity — so no cascade will do this for you.
+// Deleting a product takes its files with it — the ones it alone was using. An image another product
+// also references is only unlinked, which is the point of the attachment table: one product going
+// must not pull a shared image out of the others. Nothing in the database refers to a media row —
+// that is what lets two tables serve every entity — so no cascade will do this for you.
 app.MapDelete("/api/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
 {
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
@@ -154,7 +156,7 @@ app.Run();
 
 static async Task<ProductResponse> ToResponseAsync(Product product, IMediaManager media, CancellationToken ct)
 {
-    var files = await media.For(product).ListAsync("product-images", ct);
+    var files = await media.For(product).ListByCategoryAsync("product-images", ct);
 
     return new ProductResponse(
         product.Id,

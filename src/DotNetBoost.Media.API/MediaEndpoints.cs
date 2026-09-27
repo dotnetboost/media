@@ -18,8 +18,11 @@ namespace DotNetBoost.Media.API
     /// <param name="Category">The bucket it was sorted into.</param>
     /// <param name="Tags">Its labels.</param>
     /// <param name="Metadata">Whatever the application kept alongside it.</param>
-    /// <param name="OwnerEntityName">The entity it is attached to.</param>
-    /// <param name="OwnerEntityId">That entity's key.</param>
+    /// <param name="Attachments">
+    /// Everything using this file, on the single-file read. <c>null</c> in a listing, which does not
+    /// carry them: a page of fifty files would need a query per file to fill, and a library browser
+    /// does not need them to draw a grid. Read one file to see them.
+    /// </param>
     /// <param name="UploadedBy">Who uploaded it.</param>
     /// <param name="CreatedAt">When it was uploaded.</param>
     /// <param name="UpdatedAt">When its metadata last changed.</param>
@@ -36,8 +39,7 @@ namespace DotNetBoost.Media.API
         string? Category,
         IReadOnlyList<string> Tags,
         IReadOnlyDictionary<string, string> Metadata,
-        string? OwnerEntityName,
-        string? OwnerEntityId,
+        IReadOnlyList<MediaAttachmentResponse>? Attachments,
         string? UploadedBy,
         DateTime CreatedAt,
         DateTime? UpdatedAt,
@@ -52,7 +54,10 @@ namespace DotNetBoost.Media.API
         /// The row keeps them; the response does not.
         /// </para>
         /// </summary>
-        public static MediaFileResponse From(MediaFileInfo file, Uri? url = null)
+        public static MediaFileResponse From(
+            MediaFileInfo file,
+            Uri? url = null,
+            IReadOnlyList<MediaAttachmentInfo>? attachments = null)
         {
             ArgumentNullException.ThrowIfNull(file);
 
@@ -65,8 +70,7 @@ namespace DotNetBoost.Media.API
                 file.Category,
                 file.Tags,
                 file.Metadata,
-                file.OwnerEntityName,
-                file.OwnerEntityId,
+                attachments is null ? null : [.. attachments.Select(MediaAttachmentResponse.From)],
                 file.UploadedBy,
                 file.CreatedAt,
                 file.UpdatedAt,
@@ -75,6 +79,83 @@ namespace DotNetBoost.Media.API
                 // pre-signed token whose signature covers the escaped form.
                 url?.AbsoluteUri);
         }
+    }
+
+    /// <summary>One entity's use of a file, as the endpoints return it.</summary>
+    /// <param name="Id">The link's identity.</param>
+    /// <param name="OwnerEntityName">The entity type using the file, e.g. <c>Product</c>.</param>
+    /// <param name="OwnerEntityId">That entity's key.</param>
+    /// <param name="Role">What the file does for it — <c>primary</c>, <c>gallery</c>, <c>seo</c>.</param>
+    /// <param name="SortOrder">Its position within that role.</param>
+    /// <param name="CreatedAt">When it was attached.</param>
+    public sealed record MediaAttachmentResponse(
+        Guid Id,
+        string OwnerEntityName,
+        string OwnerEntityId,
+        string Role,
+        int SortOrder,
+        DateTime CreatedAt)
+    {
+        /// <summary>Maps a snapshot to its wire shape.</summary>
+        public static MediaAttachmentResponse From(MediaAttachmentInfo attachment)
+        {
+            ArgumentNullException.ThrowIfNull(attachment);
+
+            return new MediaAttachmentResponse(
+                attachment.Id,
+                attachment.Owner.EntityName,
+                attachment.Owner.EntityId,
+                attachment.Role,
+                attachment.SortOrder,
+                attachment.CreatedAt);
+        }
+    }
+
+    /// <summary>Body of <c>POST {prefix}/{id}/attachments</c>.</summary>
+    public sealed record AttachMediaRequest
+    {
+        /// <summary>The entity type to attach the file to, e.g. <c>Product</c>. Required.</summary>
+        public string? OwnerEntityName { get; init; }
+
+        /// <summary>That entity's key. Required.</summary>
+        public string? OwnerEntityId { get; init; }
+
+        /// <summary>
+        /// What the file is for — <c>primary</c>, <c>gallery</c>, <c>seo</c>. Defaults to
+        /// <c>default</c>. Lower-cased, so <c>Primary</c> and <c>primary</c> are one role.
+        /// </summary>
+        public string? Role { get; init; }
+
+        /// <summary>
+        /// Whether this file becomes the <b>only</b> holder of that role, detaching whatever held it
+        /// before — <c>true</c> for a single-valued role like <c>primary</c>. Default: <c>false</c>,
+        /// which appends, as a gallery does.
+        /// <para>
+        /// The files it displaces are only detached, never deleted: they may well be in use
+        /// elsewhere.
+        /// </para>
+        /// </summary>
+        public bool Replace { get; init; }
+    }
+
+    /// <summary>Body of <c>PUT {prefix}/attachments/order</c>.</summary>
+    public sealed record ReorderAttachmentsRequest
+    {
+        /// <summary>The entity type whose files are being reordered. Required.</summary>
+        public string? OwnerEntityName { get; init; }
+
+        /// <summary>That entity's key. Required.</summary>
+        public string? OwnerEntityId { get; init; }
+
+        /// <summary>The role to reorder. Defaults to <c>default</c>.</summary>
+        public string? Role { get; init; }
+
+        /// <summary>
+        /// Every file attached to that entity in that role, in the order wanted. All of them: a
+        /// partial list has no unambiguous meaning, since the files left out would have no defined
+        /// position.
+        /// </summary>
+        public IReadOnlyList<Guid>? MediaFileIds { get; init; }
     }
 
     /// <summary>One page of a listing.</summary>
@@ -99,14 +180,8 @@ namespace DotNetBoost.Media.API
         /// <summary>Replaces the file's metadata outright. An empty object clears it.</summary>
         public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
-        /// <summary>The entity to attach it to. Needs <see cref="OwnerEntityId"/> as well.</summary>
-        public string? OwnerEntityName { get; init; }
-
-        /// <summary>That entity's key.</summary>
-        public string? OwnerEntityId { get; init; }
-
-        /// <summary>Detaches the file from whatever it was attached to.</summary>
-        public bool ClearOwner { get; init; }
+        // Attaching is not a metadata patch: it creates or removes a link, and one file may be
+        // attached to many entities. POST and DELETE {prefix}/{id}/attachments do that.
     }
 }
 
@@ -123,9 +198,25 @@ namespace Microsoft.Extensions.DependencyInjection
         /// GET    {prefix}/{id}            one file's metadata
         /// GET    {prefix}/{id}/content    download the bytes (supports Range)
         /// GET    {prefix}/{id}/url        a direct link, when the backend mints one
-        /// PATCH  {prefix}/{id}            change name, category, tags, metadata or owner
-        /// DELETE {prefix}/{id}            delete
+        /// PATCH  {prefix}/{id}            change name, category, tags or metadata
+        /// DELETE {prefix}/{id}            delete the file, and every link to it
+        ///
+        /// POST   {prefix}/{id}/attachments   attach the file to an entity
+        /// DELETE {prefix}/{id}/attachments   detach it from one, leaving the file alone
+        /// PUT    {prefix}/attachments/order  reorder one entity's files within a role
         /// </code>
+        /// <para>
+        /// Note what the two deletes mean. <c>DELETE {prefix}/{id}</c> removes the file from the
+        /// library and therefore from every entity using it; <c>DELETE {prefix}/{id}/attachments</c>
+        /// removes it from one entity and touches neither the file nor its bytes. A UI offering
+        /// "remove this image from the product" wants the second.
+        /// </para>
+        /// <para>
+        /// There is deliberately no "delete everything this entity has" endpoint.
+        /// <c>IMediaAccessor.DeleteAllAsync</c> exists for when an entity is deleted, and that is a
+        /// decision the application makes in its own code, next to deleting the entity — not
+        /// something to expose as one request that destroys an arbitrary entity's media.
+        /// </para>
         /// <para>
         /// <b>They are anonymous</b>, as every <c>Map…</c> in ASP.NET Core is: a library cannot
         /// know which authorization policies an application has declared, so requiring one here
@@ -176,13 +267,27 @@ namespace Microsoft.Extensions.DependencyInjection
                 .ProducesProblem(StatusCodes.Status404NotFound);
 
             group.MapPatch("/{id:guid}", UpdateAsync)
-                .WithSummary("Changes a file's name, category, tags, metadata or owner.")
+                .WithSummary("Changes a file's name, category, tags or metadata.")
                 .ProducesProblem(StatusCodes.Status400BadRequest)
                 .ProducesProblem(StatusCodes.Status404NotFound);
 
             group.MapDelete("/{id:guid}", DeleteAsync)
-                .WithSummary("Deletes a file: its bytes always, its row unless soft delete is on.")
+                .WithSummary("Deletes a file and every link to it: its bytes always, its row unless soft delete is on.")
                 .ProducesProblem(StatusCodes.Status404NotFound);
+
+            group.MapPost("/{id:guid}/attachments", AttachAsync)
+                .WithSummary("Attaches the file to an entity, appended within a role or replacing it.")
+                .ProducesProblem(StatusCodes.Status400BadRequest)
+                .ProducesProblem(StatusCodes.Status404NotFound);
+
+            group.MapDelete("/{id:guid}/attachments", DetachAsync)
+                .WithSummary("Detaches the file from one entity. The file and its bytes are untouched.")
+                .ProducesProblem(StatusCodes.Status400BadRequest)
+                .ProducesProblem(StatusCodes.Status404NotFound);
+
+            group.MapPut("/attachments/order", ReorderAsync)
+                .WithSummary("Reorders one entity's files within a role.")
+                .ProducesProblem(StatusCodes.Status400BadRequest);
 
             return group;
         }
@@ -213,16 +318,11 @@ namespace Microsoft.Extensions.DependencyInjection
             if (file is null || file.Length == 0)
                 return TypedResults.BadRequest("No file was sent. Include one in a field named \"file\".");
 
-            var owner = form["ownerEntityName"].FirstOrDefault() is { Length: > 0 } ownerName
-                        && form["ownerEntityId"].FirstOrDefault() is { Length: > 0 } ownerId
-                ? new MediaOwner(ownerName, ownerId)
-                : (MediaOwner?)null;
-
             // OpenReadStream is the buffered-or-spooled body ASP.NET Core already has; nothing is
             // read into memory here beyond what the form parser did.
             await using var content = file.OpenReadStream();
 
-            var stored = await media.UploadAsync(new MediaUpload
+            var upload = new MediaUpload
             {
                 Content     = content,
                 FileName    = file.FileName,
@@ -230,8 +330,16 @@ namespace Microsoft.Extensions.DependencyInjection
                 Category    = form["category"].FirstOrDefault(),
                 Tags        = ParseTags(form["tags"].FirstOrDefault()),
                 UploadedBy  = form["uploadedBy"].FirstOrDefault(),
-                Owner       = owner
-            }, ct);
+                Role        = form["role"].FirstOrDefault()
+            };
+
+            // Sending an owner uploads and attaches in one request, which is what a form that
+            // already knows its product does. Without one the file lands in the library unattached,
+            // waiting for a POST to {id}/attachments — the draft-form case.
+            var stored = form["ownerEntityName"].FirstOrDefault() is { Length: > 0 } ownerName
+                         && form["ownerEntityId"].FirstOrDefault() is { Length: > 0 } ownerId
+                ? await media.For(ownerName, ownerId).UploadAsync(upload, ct)
+                : await media.UploadAsync(upload, ct);
 
             return TypedResults.Created($"{basePath}/{stored.Id}", MediaFileResponse.From(stored));
         }
@@ -241,6 +349,8 @@ namespace Microsoft.Extensions.DependencyInjection
             CancellationToken ct,
             string? ownerEntityName = null,
             string? ownerEntityId = null,
+            string? role = null,
+            bool unattached = false,
             string? category = null,
             string? tag = null,
             string? contentType = null,
@@ -256,6 +366,8 @@ namespace Microsoft.Extensions.DependencyInjection
             {
                 OwnerEntityName   = ownerEntityName,
                 OwnerEntityId     = ownerEntityId,
+                Role              = role,
+                Unattached        = unattached,
                 Category          = category,
                 Tag               = tag,
                 ContentTypePrefix = contentType,
@@ -275,8 +387,16 @@ namespace Microsoft.Extensions.DependencyInjection
                 page.Take));
         }
 
-        private static async Task<Ok<MediaFileResponse>> GetAsync(Guid id, IMediaManager media, CancellationToken ct) =>
-            TypedResults.Ok(MediaFileResponse.From(await media.GetAsync(id, ct)));
+        private static async Task<Ok<MediaFileResponse>> GetAsync(Guid id, IMediaManager media, CancellationToken ct)
+        {
+            var file = await media.GetAsync(id, ct);
+
+            // The links come with the single-file read, so a client can say "used by 4 entities"
+            // before offering a delete button that would remove it from all of them.
+            var attachments = await media.GetAttachmentsAsync(id, ct);
+
+            return TypedResults.Ok(MediaFileResponse.From(file, url: null, attachments));
+        }
 
         private static async Task<IResult> DownloadAsync(
             Guid id,
@@ -336,18 +456,12 @@ namespace Microsoft.Extensions.DependencyInjection
         {
             ArgumentNullException.ThrowIfNull(request);
 
-            var owner = request is { OwnerEntityName: { Length: > 0 } name, OwnerEntityId: { Length: > 0 } key }
-                ? new MediaOwner(name, key)
-                : (MediaOwner?)null;
-
             var updated = await media.UpdateAsync(id, new MediaUpdate
             {
-                FileName   = request.FileName,
-                Category   = request.Category,
-                Tags       = request.Tags,
-                Metadata   = request.Metadata,
-                Owner      = owner,
-                ClearOwner = request.ClearOwner
+                FileName = request.FileName,
+                Category = request.Category,
+                Tags     = request.Tags,
+                Metadata = request.Metadata
             }, ct);
 
             return TypedResults.Ok(MediaFileResponse.From(updated));
@@ -358,6 +472,90 @@ namespace Microsoft.Extensions.DependencyInjection
                 ? TypedResults.NoContent()
                 : TypedResults.NotFound();
 
+        private static async Task<Ok<MediaFileResponse>> AttachAsync(
+            Guid id,
+            DotNetBoost.Media.API.AttachMediaRequest request,
+            IMediaManager media,
+            CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            var accessor = AccessorFor(media, request.OwnerEntityName, request.OwnerEntityId);
+
+            // Replace is what makes a single-valued role single-valued, and it is the caller's to
+            // say: no schema can know that "primary" holds one file and "gallery" holds many.
+            var attached = request.Replace
+                ? await accessor.SetAsync(request.Role ?? MediaRoles.Default, id, ct)
+                : await accessor.AddAsync(id, request.Role, ct);
+
+            // 200 rather than 201, and with the links: attaching is idempotent, so a repeat is not a
+            // new resource, and the response is what the client needs to redraw either way.
+            var attachments = await media.GetAttachmentsAsync(attached.Id, ct);
+
+            return TypedResults.Ok(MediaFileResponse.From(attached, url: null, attachments));
+        }
+
+        private static async Task<Results<Ok<MediaFileResponse>, NotFound>> DetachAsync(
+            Guid id,
+            IMediaManager media,
+            CancellationToken ct,
+            string? ownerEntityName = null,
+            string? ownerEntityId = null,
+            string? role = null)
+        {
+            var accessor = AccessorFor(media, ownerEntityName, ownerEntityId);
+
+            // Left out, role removes the file from every role on this entity — "take this image off
+            // the product", however it was being used there.
+            if (!await accessor.DetachAsync(id, role, ct))
+                return TypedResults.NotFound();
+
+            // The file itself is untouched, so it is still there to return — and its remaining links
+            // are what the caller wants to see.
+            var file        = await media.GetAsync(id, ct);
+            var attachments = await media.GetAttachmentsAsync(id, ct);
+
+            return TypedResults.Ok(MediaFileResponse.From(file, url: null, attachments));
+        }
+
+        private static async Task<NoContent> ReorderAsync(
+            DotNetBoost.Media.API.ReorderAttachmentsRequest request,
+            IMediaManager media,
+            CancellationToken ct)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+
+            if (request.MediaFileIds is null)
+            {
+                throw new InvalidMediaException(
+                    "Send mediaFileIds: every file attached to that entity in that role, in the order wanted. " +
+                    "A partial order has no meaning, since the files left out would have no defined position.");
+            }
+
+            await AccessorFor(media, request.OwnerEntityName, request.OwnerEntityId)
+                .ReorderAsync(request.Role ?? MediaRoles.Default, request.MediaFileIds, ct);
+
+            return TypedResults.NoContent();
+        }
+
+        /// <summary>
+        /// The accessor for an owner a request named, as a 400 rather than an unhandled 500 when it
+        /// named half of one. <c>IMediaManager.For</c> throws <see cref="ArgumentException"/> for a
+        /// missing name or key, which is the right answer for a programming error and the wrong one
+        /// for a request body.
+        /// </summary>
+        private static IMediaAccessor AccessorFor(IMediaManager media, string? entityName, string? entityId)
+        {
+            if (entityName is not { Length: > 0 } || entityId is not { Length: > 0 })
+            {
+                throw new InvalidMediaException(
+                    "Send both ownerEntityName and ownerEntityId. An entity type without a key, or a key " +
+                    "without its type, does not identify anything to attach to.");
+            }
+
+            return media.For(entityName, entityId);
+        }
+
         /// <summary>
         /// The <c>sortBy</c> query value. An unrecognised one falls back to the default rather
         /// than failing the request: a listing is a read, and a typo in a query string should not
@@ -365,9 +563,12 @@ namespace Microsoft.Extensions.DependencyInjection
         /// </summary>
         private static MediaSortBy ParseSortBy(string? value) => value?.Trim().ToUpperInvariant() switch
         {
-            "FILENAME" or "NAME" => MediaSortBy.FileName,
-            "SIZE"               => MediaSortBy.Size,
-            _                    => MediaSortBy.CreatedAt
+            "FILENAME" or "NAME"        => MediaSortBy.FileName,
+            "SIZE"                      => MediaSortBy.Size,
+            // Needs an owner, and the engine says so as a 400 rather than this silently ignoring it:
+            // a gallery drawn in the wrong order with a 200 is worse than a refused request.
+            "SORTORDER" or "ORDER"      => MediaSortBy.SortOrder,
+            _                           => MediaSortBy.CreatedAt
         };
 
         /// <summary>Splits the comma-separated <c>tags</c> form field. <c>null</c> when it was not sent.</summary>

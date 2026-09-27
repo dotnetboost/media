@@ -57,8 +57,14 @@ public class UploadEndpointTests
 
         var file = await response.Content.ReadFromJsonAsync<MediaFileResponse>();
 
-        Assert.Equal("Product", file!.OwnerEntityName);
-        Assert.Equal("42", file.OwnerEntityId);
+        // The upload response carries no links — the read does — so ask for the file itself.
+        var read = await app.Client.GetFromJsonAsync<MediaFileResponse>(
+            new Uri($"/api/media/{file!.Id}", UriKind.Relative));
+
+        var attachment = Assert.Single(read!.Attachments!);
+        Assert.Equal("Product", attachment.OwnerEntityName);
+        Assert.Equal("42", attachment.OwnerEntityId);
+        Assert.Equal(MediaRoles.Default, attachment.Role);
     }
 
     [Fact]
@@ -315,26 +321,244 @@ public class WriteEndpointTests
     }
 
     [Fact]
-    public async Task Patch_can_attach_and_detach()
+    public async Task Post_attachments_attaches_an_already_uploaded_file()
     {
         await using var app = await TestApp.StartAsync();
 
-        var created  = await app.Client.PostAsync(new Uri("/api/media", UriKind.Relative), TestApp.Multipart(TestMedia.Png()));
-        var uploaded = (await created.Content.ReadFromJsonAsync<MediaFileResponse>())!;
+        var uploaded = await UploadAsync(app);
 
-        var attached = await (await app.Client.PatchAsJsonAsync(
-            new Uri($"/api/media/{uploaded.Id}", UriKind.Relative),
-            new UpdateMediaRequest { OwnerEntityName = "Product", OwnerEntityId = "7" }))
+        var attached = await (await app.Client.PostAsJsonAsync(
+            new Uri($"/api/media/{uploaded.Id}/attachments", UriKind.Relative),
+            new AttachMediaRequest { OwnerEntityName = "Product", OwnerEntityId = "7" }))
             .Content.ReadFromJsonAsync<MediaFileResponse>();
 
-        Assert.Equal("Product", attached!.OwnerEntityName);
+        var attachment = Assert.Single(attached!.Attachments!);
+        Assert.Equal("Product", attachment.OwnerEntityName);
+        Assert.Equal("7", attachment.OwnerEntityId);
+    }
 
-        var detached = await (await app.Client.PatchAsJsonAsync(
-            new Uri($"/api/media/{uploaded.Id}", UriKind.Relative),
-            new UpdateMediaRequest { ClearOwner = true }))
+    /// <summary>
+    /// The behaviour the single owner column could not express: the second attach used to move the
+    /// file off the first product.
+    /// </summary>
+    [Fact]
+    public async Task Post_attachments_can_attach_one_file_to_two_entities()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var uploaded = await UploadAsync(app);
+
+        await AttachAsync(app, uploaded.Id, "Product", "1");
+        var second = await AttachAsync(app, uploaded.Id, "Product", "2");
+
+        Assert.Equal(2, second.Attachments!.Count);
+
+        foreach (var entityId in new[] { "1", "2" })
+        {
+            var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(
+                new Uri($"/api/media?ownerEntityName=Product&ownerEntityId={entityId}", UriKind.Relative));
+
+            Assert.Equal(uploaded.Id, Assert.Single(page!.Items).Id);
+        }
+    }
+
+    [Fact]
+    public async Task Post_attachments_with_replace_takes_over_the_role()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var first  = await UploadAsync(app);
+        var second = await UploadAsync(app);
+
+        await AttachAsync(app, first.Id, "Product", "1", MediaRoles.Primary, replace: true);
+        await AttachAsync(app, second.Id, "Product", "1", MediaRoles.Primary, replace: true);
+
+        var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(
+            new Uri($"/api/media?ownerEntityName=Product&ownerEntityId=1&role={MediaRoles.Primary}", UriKind.Relative));
+
+        Assert.Equal(second.Id, Assert.Single(page!.Items).Id);
+
+        // Displaced, not deleted: it may well be in use elsewhere.
+        var displaced = await app.Client.GetAsync(new Uri($"/api/media/{first.Id}", UriKind.Relative));
+        Assert.Equal(HttpStatusCode.OK, displaced.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_attachments_without_an_owner_is_a_bad_request()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var uploaded = await UploadAsync(app);
+
+        var response = await app.Client.PostAsJsonAsync(
+            new Uri($"/api/media/{uploaded.Id}/attachments", UriKind.Relative),
+            new AttachMediaRequest { OwnerEntityName = "Product" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_attachments_unlinks_one_entity_and_keeps_the_file()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var uploaded = await UploadAsync(app);
+
+        await AttachAsync(app, uploaded.Id, "Product", "1");
+        await AttachAsync(app, uploaded.Id, "Product", "2");
+
+        var detached = await (await app.Client.DeleteAsync(new Uri(
+                $"/api/media/{uploaded.Id}/attachments?ownerEntityName=Product&ownerEntityId=1",
+                UriKind.Relative)))
             .Content.ReadFromJsonAsync<MediaFileResponse>();
 
-        Assert.Null(detached!.OwnerEntityName);
+        // The file is still there, and product 2 still has it.
+        var left = Assert.Single(detached!.Attachments!);
+        Assert.Equal("2", left.OwnerEntityId);
+
+        var content = await app.Client.GetAsync(new Uri($"/api/media/{uploaded.Id}/content", UriKind.Relative));
+        Assert.Equal(HttpStatusCode.OK, content.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_attachments_is_not_found_when_there_was_no_link()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var uploaded = await UploadAsync(app);
+
+        var response = await app.Client.DeleteAsync(new Uri(
+            $"/api/media/{uploaded.Id}/attachments?ownerEntityName=Product&ownerEntityId=9",
+            UriKind.Relative));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Delete_removes_the_file_from_every_entity_using_it()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var uploaded = await UploadAsync(app);
+
+        await AttachAsync(app, uploaded.Id, "Product", "1");
+        await AttachAsync(app, uploaded.Id, "Product", "2");
+
+        await app.Client.DeleteAsync(new Uri($"/api/media/{uploaded.Id}", UriKind.Relative));
+
+        foreach (var entityId in new[] { "1", "2" })
+        {
+            var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(
+                new Uri($"/api/media?ownerEntityName=Product&ownerEntityId={entityId}", UriKind.Relative));
+
+            Assert.Empty(page!.Items);
+        }
+    }
+
+    [Fact]
+    public async Task Put_attachments_order_reorders_a_role()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var a = await UploadAsync(app, "a.png");
+        var b = await UploadAsync(app, "b.png");
+        var c = await UploadAsync(app, "c.png");
+
+        foreach (var file in new[] { a, b, c })
+            await AttachAsync(app, file.Id, "Product", "1", MediaRoles.Gallery);
+
+        var response = await app.Client.PutAsJsonAsync(
+            new Uri("/api/media/attachments/order", UriKind.Relative),
+            new ReorderAttachmentsRequest
+            {
+                OwnerEntityName = "Product",
+                OwnerEntityId   = "1",
+                Role            = MediaRoles.Gallery,
+                MediaFileIds    = [c.Id, a.Id, b.Id]
+            });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(new Uri(
+            $"/api/media?ownerEntityName=Product&ownerEntityId=1&role={MediaRoles.Gallery}" +
+            "&sortBy=sortOrder&descending=false",
+            UriKind.Relative));
+
+        Assert.Equal(["c.png", "a.png", "b.png"], page!.Items.Select(f => f.FileName));
+    }
+
+    [Fact]
+    public async Task Put_attachments_order_refuses_a_partial_order()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var a = await UploadAsync(app, "a.png");
+        var b = await UploadAsync(app, "b.png");
+
+        foreach (var file in new[] { a, b })
+            await AttachAsync(app, file.Id, "Product", "1", MediaRoles.Gallery);
+
+        var response = await app.Client.PutAsJsonAsync(
+            new Uri("/api/media/attachments/order", UriKind.Relative),
+            new ReorderAttachmentsRequest
+            {
+                OwnerEntityName = "Product",
+                OwnerEntityId   = "1",
+                Role            = MediaRoles.Gallery,
+                MediaFileIds    = [a.Id]
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task List_finds_the_files_nothing_is_attached_to()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var loose = await UploadAsync(app, "loose.png");
+        var used  = await UploadAsync(app, "used.png");
+        await AttachAsync(app, used.Id, "Product", "1");
+
+        var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(
+            new Uri("/api/media?unattached=true", UriKind.Relative));
+
+        Assert.Equal(loose.Id, Assert.Single(page!.Items).Id);
+    }
+
+    [Fact]
+    public async Task List_refuses_the_entitys_own_order_without_an_owner()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var response = await app.Client.GetAsync(new Uri("/api/media?sortBy=sortOrder", UriKind.Relative));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    private static async Task<MediaFileResponse> UploadAsync(TestApp app, string fileName = "photo.png")
+    {
+        var created = await app.Client.PostAsync(
+            new Uri("/api/media", UriKind.Relative),
+            TestApp.Multipart(TestMedia.Png(), fileName));
+
+        return (await created.Content.ReadFromJsonAsync<MediaFileResponse>())!;
+    }
+
+    private static async Task<MediaFileResponse> AttachAsync(
+        TestApp app, Guid id, string entityName, string entityId, string? role = null, bool replace = false)
+    {
+        var response = await app.Client.PostAsJsonAsync(
+            new Uri($"/api/media/{id}/attachments", UriKind.Relative),
+            new AttachMediaRequest
+            {
+                OwnerEntityName = entityName,
+                OwnerEntityId   = entityId,
+                Role            = role,
+                Replace         = replace
+            });
+
+        return (await response.Content.ReadFromJsonAsync<MediaFileResponse>())!;
     }
 
     [Fact]
