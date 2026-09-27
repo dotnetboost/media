@@ -41,8 +41,10 @@ new migration**: the model gained an entity type and lost two properties.
 - `IMediaStore` gains seven attachment operations. Custom stores must implement them.
 - REST: `PATCH /api/media/{id}` loses `ownerEntityName`, `ownerEntityId` and `clearOwner`;
   `MediaFileResponse` loses the two owner fields and gains `attachments` on the single-file read
-  (`null` in listings). `POST`/`DELETE /api/media/{id}/attachments` and
-  `PUT /api/media/attachments/order` replace them.
+  (`null` in listings). `POST /api/media/{id}/attachments`,
+  `DELETE /api/media/{id}/attachments/{attachmentId}` and `PUT /api/media/attachments/order` replace
+  them. A link is addressed by its own id, which the single-file read hands back; the file id in the
+  route is checked, so an attachment belonging to another file is a `404`.
 - `MediaFile.Category` is trimmed and lower-cased on write, as tags and roles are, and a category
   filter is lower-cased to match. It matters more for a category than for either: the category leads
   the generated storage path, so `Product-Images` and `product-images` were two buckets *and* two
@@ -85,7 +87,10 @@ Unrelated to the above:
   from one read instead of one per role; it is per link, so a file held under two roles is listed
   twice.
 - `IMediaManager.GetAttachmentsAsync` — everything using a file, so a UI can say "used by 4
-  entities" before offering a delete that removes it from all of them.
+  entities" before offering a delete that removes it from all of them — and
+  `IMediaManager.RemoveAttachmentAsync(mediaFileId, attachmentId)`, for a caller holding a link
+  rather than an entity to scope by. Application code that knows the entity should still use
+  `IMediaAccessor.DetachAsync`, which cannot reach another entity's links at all.
 - `MediaQuery.Role` and `MediaQuery.Unattached`, and `MediaSortBy.SortOrder`. Each needs an owner
   filter and is refused without one. Without an owner the attachment table is not touched at all,
   which is what keeps a file linked to nine entities from appearing nine times in a listing, and a

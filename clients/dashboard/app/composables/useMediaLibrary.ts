@@ -191,21 +191,13 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
   )
 
   /**
-   * Removes one entity's link to a file. The file stays in the library, and stays attached to every
-   * other entity using it — this is "take it off this product", not "delete it".
-   *
-   * No role removes it from every role on that entity.
+   * Removes one link, addressed by its own id — which `GET api/media/{id}` hands back with the file.
+   * The file stays in the library, and stays attached to every other entity using it: this is "take
+   * it off this product", not "delete it".
    */
-  const detach = (
-    id: string,
-    owner: { entityName: string, entityId: string },
-    role?: string
-  ) => run(
+  const detach = (id: string, attachmentId: string) => run(
     id,
-    () => $fetch<MediaFile>(`/api/media/${id}/attachments`, {
-      method: 'DELETE',
-      query: { ownerEntityName: owner.entityName, ownerEntityId: owner.entityId, role }
-    }),
+    () => $fetch<MediaFile>(`/api/media/${id}/attachments/${attachmentId}`, { method: 'DELETE' }),
     detached => `Detached ${detached.fileName}`,
     'Could not detach the file'
   )

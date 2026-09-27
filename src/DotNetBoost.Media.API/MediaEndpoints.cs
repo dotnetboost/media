@@ -202,14 +202,15 @@ namespace Microsoft.Extensions.DependencyInjection
         /// DELETE {prefix}/{id}            delete the file, and every link to it
         ///
         /// POST   {prefix}/{id}/attachments   attach the file to an entity
-        /// DELETE {prefix}/{id}/attachments   detach it from one, leaving the file alone
+        /// DELETE {prefix}/{id}/attachments/{attachmentId}   detach it from one, file untouched
         /// PUT    {prefix}/attachments/order  reorder one entity's files within a role
         /// </code>
         /// <para>
         /// Note what the two deletes mean. <c>DELETE {prefix}/{id}</c> removes the file from the
-        /// library and therefore from every entity using it; <c>DELETE {prefix}/{id}/attachments</c>
-        /// removes it from one entity and touches neither the file nor its bytes. A UI offering
-        /// "remove this image from the product" wants the second.
+        /// library and therefore from every entity using it;
+        /// <c>DELETE {prefix}/{id}/attachments/{attachmentId}</c> removes one link and touches
+        /// neither the file nor its bytes. A UI offering "remove this image from the product" wants
+        /// the second, and gets the attachment ids from <c>GET {prefix}/{id}</c>.
         /// </para>
         /// <para>
         /// There is deliberately no "delete everything this entity has" endpoint.
@@ -280,9 +281,8 @@ namespace Microsoft.Extensions.DependencyInjection
                 .ProducesProblem(StatusCodes.Status400BadRequest)
                 .ProducesProblem(StatusCodes.Status404NotFound);
 
-            group.MapDelete("/{id:guid}/attachments", DetachAsync)
-                .WithSummary("Detaches the file from one entity. The file and its bytes are untouched.")
-                .ProducesProblem(StatusCodes.Status400BadRequest)
+            group.MapDelete("/{id:guid}/attachments/{attachmentId:guid}", DetachAsync)
+                .WithSummary("Removes one attachment. The file and its bytes are untouched.")
                 .ProducesProblem(StatusCodes.Status404NotFound);
 
             group.MapPut("/attachments/order", ReorderAsync)
@@ -497,17 +497,14 @@ namespace Microsoft.Extensions.DependencyInjection
 
         private static async Task<Results<Ok<MediaFileResponse>, NotFound>> DetachAsync(
             Guid id,
+            Guid attachmentId,
             IMediaManager media,
-            CancellationToken ct,
-            string? ownerEntityName = null,
-            string? ownerEntityId = null,
-            string? role = null)
+            CancellationToken ct)
         {
-            var accessor = AccessorFor(media, ownerEntityName, ownerEntityId);
-
-            // Left out, role removes the file from every role on this entity — "take this image off
-            // the product", however it was being used there.
-            if (!await accessor.DetachAsync(id, role, ct))
+            // One link, addressed by its own id, which `GET {prefix}/{id}` hands the client. The file
+            // id in the route is checked rather than decorative: an attachment belonging to a
+            // different file is a 404, not a quiet removal of something the caller never named.
+            if (!await media.RemoveAttachmentAsync(id, attachmentId, ct))
                 return TypedResults.NotFound();
 
             // The file itself is untouched, so it is still there to return — and its remaining links

@@ -165,11 +165,9 @@ async function onDetach(attachment: MediaAttachment) {
     return
   }
 
-  // No role, so the file leaves that entity entirely rather than only the role that happened to be
-  // listed first.
-  await detach(
-    selectedFile.value.id,
-    { entityName: attachment.ownerEntityName, entityId: attachment.ownerEntityId })
+  // One link per click. The panel lists a file's roles separately, so the id the button carries is
+  // exactly the one the user pointed at.
+  await detach(selectedFile.value.id, attachment.id)
 
   await loadAttachments(selectedFile.value.id)
   emit('changed')

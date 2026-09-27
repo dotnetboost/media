@@ -45,7 +45,8 @@ behind it was showing.
 The distinction the library rests on is visible in the UI, because getting it wrong destroys data:
 
 - **Remove from product** detaches. The file stays in the library and stays attached to every other
-  product using it.
+  product using it. On the Media page the same thing is a click on one of a file's role chips, since
+  each chip is one link.
 - **Delete**, on the Media page, removes the file and every link to it. The confirmation says how
   many entities lose it and names them — *"It is attached to 2 entities, and all of them lose it:
   Product 2, Product 1."*

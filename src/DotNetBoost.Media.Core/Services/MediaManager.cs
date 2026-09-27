@@ -214,6 +214,21 @@ internal sealed partial class MediaManager(
     }
 
     /// <inheritdoc/>
+    public async Task<bool> RemoveAttachmentAsync(
+        Guid mediaFileId, Guid attachmentId, CancellationToken ct = default)
+    {
+        // Checked against the file rather than removed on the id alone. The id identifies exactly one
+        // link, so trusting it would work — and would also let a caller that muddled two ids remove a
+        // link belonging to a file it never named.
+        var links = await store.ListAttachmentsOfFileAsync(mediaFileId, ct).ConfigureAwait(false);
+
+        if (!links.Any(link => link.Id == attachmentId))
+            return false;
+
+        return await store.RemoveAttachmentAsync(attachmentId, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
     public async Task<MediaPage> ListAsync(MediaQuery? query = null, CancellationToken ct = default)
     {
         var resolved = query ?? new MediaQuery();

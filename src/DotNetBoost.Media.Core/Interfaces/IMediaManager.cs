@@ -113,6 +113,20 @@ public interface IMediaManager
     /// <exception cref="MediaNotFoundException">No live file has that id.</exception>
     Task<IReadOnlyList<MediaAttachmentInfo>> GetAttachmentsAsync(Guid id, CancellationToken ct = default);
 
+    /// <summary>
+    /// Removes one link by its own id — for a caller holding an attachment from
+    /// <see cref="GetAttachmentsAsync"/> rather than an entity to scope by. <b>The file and its
+    /// bytes are untouched</b>, and it stays attached to everything else using it.
+    /// <para>
+    /// <paramref name="mediaFileId"/> is not redundant: it is checked, so an attachment id belonging
+    /// to a different file is refused rather than quietly removing a link the caller was not looking
+    /// at. Application code that knows the entity instead should use
+    /// <see cref="IMediaAccessor.DetachAsync"/>, which cannot reach another entity's links at all.
+    /// </para>
+    /// </summary>
+    /// <returns><c>true</c> if that file had such a link, <c>false</c> if it did not.</returns>
+    Task<bool> RemoveAttachmentAsync(Guid mediaFileId, Guid attachmentId, CancellationToken ct = default);
+
     /// <summary>One page of the files matching <paramref name="query"/>, with the total behind it.</summary>
     Task<MediaPage> ListAsync(MediaQuery? query = null, CancellationToken ct = default);
 

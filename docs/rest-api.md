@@ -27,13 +27,13 @@ app.MapMediaEndpoints();            // default prefix: /api/media
 | `PATCH` | `/api/media/{id}` | Change name, category, tags or metadata |
 | `DELETE` | `/api/media/{id}` | Delete the file, and every link to it |
 | `POST` | `/api/media/{id}/attachments` | Attach the file to an entity |
-| `DELETE` | `/api/media/{id}/attachments` | Detach it from one entity, leaving the file alone |
+| `DELETE` | `/api/media/{id}/attachments/{attachmentId}` | Remove one link, leaving the file alone |
 | `PUT` | `/api/media/attachments/order` | Reorder one entity's files within a role |
 
 Note what the two deletes mean. `DELETE /api/media/{id}` removes the file from the library and
-therefore from every entity using it; `DELETE /api/media/{id}/attachments` removes it from one
-entity and touches neither the file nor its bytes. A UI offering "remove this image from the
-product" wants the second.
+therefore from every entity using it; `DELETE /api/media/{id}/attachments/{attachmentId}` removes
+one link and touches neither the file nor its bytes. A UI offering "remove this image from the
+product" wants the second, and gets the attachment ids from `GET /api/media/{id}`.
 
 ## POST /api/media
 
@@ -193,20 +193,21 @@ only detached, never deleted.
 `role` defaults to `default` and is lower-cased. An owner named by halves — a type with no key, or a
 key with no type — is a `400`.
 
-## DELETE /api/media/{id}/attachments
+## DELETE /api/media/{id}/attachments/{attachmentId}
 
-```
-DELETE /api/media/{id}/attachments?ownerEntityName=Product&ownerEntityId=1&role=gallery
-```
+`200` with the file and its remaining attachments, or `404` when that file has no such link. **The
+file and its bytes are untouched**, and it stays attached to every other entity using it.
 
-`200` with the file and its remaining attachments, or `404` when there was no such link. **The file
-and its bytes are untouched**, and it stays attached to every other entity using it.
+One link per request. An entity that holds the same file under two roles has two attachments, and
+removing both takes two calls — which is what addressing a link by its own id means.
 
-Omit `role` to remove the file from every role on that entity.
+The ids come from `GET /api/media/{id}`. The file id in the route is **checked**, not decorative: an
+attachment belonging to a different file is a `404` rather than a quiet removal of a link the caller
+never named.
 
-The owner is in the query rather than an attachment id in the path because a client already knows
-which entity it is acting for — a product page removing an image knows the product — and would
-otherwise have to read the file first to learn an id it never needed.
+Application code that knows the entity rather than the link should use the C# API instead —
+`media.For(product).DetachAsync(fileId, role)` is scoped to that entity and cannot reach another's
+links at all.
 
 ## PUT /api/media/attachments/order
 

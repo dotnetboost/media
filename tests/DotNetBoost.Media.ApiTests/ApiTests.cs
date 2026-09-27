@@ -405,11 +405,12 @@ public class WriteEndpointTests
         var uploaded = await UploadAsync(app);
 
         await AttachAsync(app, uploaded.Id, "Product", "1");
-        await AttachAsync(app, uploaded.Id, "Product", "2");
+        var both = await AttachAsync(app, uploaded.Id, "Product", "2");
+
+        var link = both.Attachments!.Single(a => a.OwnerEntityId == "1");
 
         var detached = await (await app.Client.DeleteAsync(new Uri(
-                $"/api/media/{uploaded.Id}/attachments?ownerEntityName=Product&ownerEntityId=1",
-                UriKind.Relative)))
+                $"/api/media/{uploaded.Id}/attachments/{link.Id}", UriKind.Relative)))
             .Content.ReadFromJsonAsync<MediaFileResponse>();
 
         // The file is still there, and product 2 still has it.
@@ -421,17 +422,45 @@ public class WriteEndpointTests
     }
 
     [Fact]
-    public async Task Delete_attachments_is_not_found_when_there_was_no_link()
+    public async Task Delete_attachments_is_not_found_when_there_was_no_such_link()
     {
         await using var app = await TestApp.StartAsync();
 
         var uploaded = await UploadAsync(app);
 
         var response = await app.Client.DeleteAsync(new Uri(
-            $"/api/media/{uploaded.Id}/attachments?ownerEntityName=Product&ownerEntityId=9",
-            UriKind.Relative));
+            $"/api/media/{uploaded.Id}/attachments/{Guid.NewGuid()}", UriKind.Relative));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    /// <summary>
+    /// The file id in the route is checked, not decorative. Without that, muddling two ids would
+    /// quietly remove a link belonging to a file the caller never named.
+    /// </summary>
+    [Fact]
+    public async Task Delete_attachments_refuses_a_link_belonging_to_another_file()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var mine  = await UploadAsync(app, "mine.png");
+        var other = await UploadAsync(app, "other.png");
+
+        await AttachAsync(app, mine.Id, "Product", "1");
+        var attached = await AttachAsync(app, other.Id, "Product", "2");
+
+        var otherLink = Assert.Single(attached.Attachments!);
+
+        var response = await app.Client.DeleteAsync(new Uri(
+            $"/api/media/{mine.Id}/attachments/{otherLink.Id}", UriKind.Relative));
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        // And the other file's link is still there.
+        var read = await app.Client.GetFromJsonAsync<MediaFileResponse>(
+            new Uri($"/api/media/{other.Id}", UriKind.Relative));
+
+        Assert.Single(read!.Attachments!);
     }
 
     [Fact]

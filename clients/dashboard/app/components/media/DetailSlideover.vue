@@ -141,8 +141,8 @@ const facts = computed(() => [
         <UFormField
           label="Used by"
           :description="usedBy.length > 1
-            ? 'One file, several entities — nothing is copied, they all point at the same bytes. Detaching removes one link; deleting the file removes it from all of them.'
-            : 'Which entities this file is attached to. Detaching removes the link, not the file.'"
+            ? 'One file, several entities — nothing is copied, they all point at the same bytes. Click a role to remove that one link; deleting the file removes it from all of them.'
+            : 'Which entities this file is attached to, and what each uses it for. Click a role to remove that link — the file itself stays.'"
         >
           <USkeleton v-if="loadingAttachments" class="h-7 w-40" />
 
@@ -163,24 +163,20 @@ const facts = computed(() => [
                 :label="`${entity.entityName} ${entity.entityId}`"
               />
 
-              <UBadge
+              <!-- One chip per link, each removable on its own: an entity can hold the same file
+                   under several roles, and a single button for the group could only ever detach
+                   one of them. -->
+              <UButton
                 v-for="link in entity.links"
                 :key="link.id"
                 color="neutral"
                 variant="outline"
-                size="sm"
-                :label="link.role"
-              />
-
-              <UButton
-                icon="i-lucide-unlink"
-                color="neutral"
-                variant="ghost"
                 size="xs"
-                :aria-label="`Detach from ${entity.entityName} ${entity.entityId}`"
-                label="Detach"
+                icon="i-lucide-unlink"
+                :label="link.role"
+                :aria-label="`Detach ${link.role} from ${entity.entityName} ${entity.entityId}`"
                 :loading="busy"
-                @click="emit('detach', entity.links[0]!)"
+                @click="emit('detach', link)"
               />
             </div>
           </div>
