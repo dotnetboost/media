@@ -9,8 +9,11 @@ var page = await media.ListAsync(new MediaQuery
     Tag               = "hero",
     ContentTypePrefix = "image/",
     UploadedBy        = "alice@example.com",
+    Search            = "hero",
     CreatedAfter      = DateTime.UtcNow.AddDays(-30),
     CreatedBefore     = DateTime.UtcNow,
+    SortBy            = MediaSortBy.CreatedAt,
+    Descending        = true,
     Skip              = 0,
     Take              = 50
 }, ct);
@@ -20,10 +23,44 @@ Every property is optional and the set ones are ANDed, so `new MediaQuery()` mea
 file, newest first". The query is deliberately small enough that each of the three stores can
 translate it into one statement.
 
-## Ordering and paging
+## Searching by name
 
-Newest first by default; `OldestFirst = true` reverses it. Both orders break ties on the id, so
-two files created in the same tick page stably rather than repeating one row and skipping another.
+`Search` matches anywhere in the file name, case-insensitively:
+
+```csharp
+new MediaQuery { Search = "invoice" }   // matches "2026-invoice-final.pdf"
+```
+
+Both sides are lowered before the comparison, deliberately. `LIKE` is case-**sensitive** on
+PostgreSQL and case-insensitive on SQL Server by default, so matching the column's collation would
+make "case-insensitive" true on one engine and false on another — worse than either.
+
+A value containing `%` or `_` is escaped, so a search for `report_final` matches that and not
+`reportxfinal`.
+
+It cannot use an index, being an unanchored `LIKE`. That is fine for an administrative search over
+a library of ordinary size and not for a hot path on a large one; there, put a full-text index on
+the column and query it yourself.
+
+## Ordering
+
+`SortBy` takes `MediaSortBy.CreatedAt` (the default), `FileName` or `Size`, and `Descending`
+(default `true`) picks the direction — so the default is newest first, which is the order a media
+library is nearly always wanted in.
+
+```csharp
+new MediaQuery { SortBy = MediaSortBy.Size, Descending = true }       // largest first
+new MediaQuery { SortBy = MediaSortBy.FileName, Descending = false }  // A–Z
+```
+
+Every ordering ends on the id. Without that tiebreaker, rows that tie on the sort column — three
+files of the same size, two uploaded in the same tick — page unstably, repeating one row on the
+next page and skipping another.
+
+There is deliberately no "order by tag" or "order by owner": one would sort by a delimited string
+and the other by a key that is not meant to be read.
+
+## Paging
 
 `Take` defaults to 50 and is **capped at 500**. A page size is a client's suggestion, and an
 unbounded one is how a listing endpoint becomes a way to exhaust the server's memory.

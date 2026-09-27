@@ -296,6 +296,7 @@ the resolved root as well.
 | [Metadata stores](https://github.com/dotnetboost/media/blob/main/docs/metadata-stores.md) | EF Core, Dapper, MongoDB |
 | [Validation and security](https://github.com/dotnetboost/media/blob/main/docs/validation-and-security.md) | Limits, allow-lists, sniffing, path safety |
 | [REST API](https://github.com/dotnetboost/media/blob/main/docs/rest-api.md) | Every endpoint, with its status codes |
+| [Dashboard](https://github.com/dotnetboost/media/blob/main/docs/dashboard.md) | The Nuxt client in `clients/dashboard` |
 | [Querying](https://github.com/dotnetboost/media/blob/main/docs/querying.md) | Filtering, paging, tags |
 | [Configuration reference](https://github.com/dotnetboost/media/blob/main/docs/configuration-reference.md) | Every option and builder method |
 | [Adding a backend](https://github.com/dotnetboost/media/blob/main/docs/adding-a-backend.md) | Implementing `IMediaStorageProvider` |
@@ -310,8 +311,10 @@ the resolved root as well.
 dotnet run --project aspire/DotNetBoost.Media.AppHost
 ```
 
-Starts PostgreSQL in a container and the sample API beside it, with the Aspire dashboard for logs
-and traces. See [docs/aspire.md](https://github.com/dotnetboost/media/blob/main/docs/aspire.md).
+Starts PostgreSQL in a container, the sample API beside it, and a **Nuxt dashboard** over both —
+browse the library, search it, sort it, upload, and attach files to a product from a modal that is
+the same browser as the Media page. See [docs/aspire.md](https://github.com/dotnetboost/media/blob/main/docs/aspire.md) and
+[docs/dashboard.md](https://github.com/dotnetboost/media/blob/main/docs/dashboard.md).
 
 ---
 

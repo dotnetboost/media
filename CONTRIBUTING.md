@@ -23,8 +23,10 @@ dotnetboost-media/
 │   └── DotNetBoost.Media.TestSupport        # In-memory doubles shared by the suites
 ├── samples/
 │   └── SampleApp                            # EF Core + PostgreSQL + local disk, the reference demo
+├── clients/
+│   └── dashboard                            # Nuxt 4 client for the media endpoints (SPA)
 ├── aspire/
-│   ├── DotNetBoost.Media.AppHost            # Orchestrates the API and its containers
+│   ├── DotNetBoost.Media.AppHost            # Orchestrates the API, the dashboard and the containers
 │   └── DotNetBoost.Media.ServiceDefaults    # OTel, health checks, service discovery
 └── docs/                                    # Additional documentation
 ```
@@ -79,6 +81,13 @@ public member of a shipped package needs XML docs.
   on PostgreSQL, SQL Server and MongoDB in CI.
 - **A backend change needs a contract test.** Add it to `StorageContractTests`, which runs against
   Azurite and MinIO. A mocked cloud SDK proves only that the mock matches the test.
+- **The dashboard has one browser, not two.** `clients/dashboard` shows the media library on its
+  own page and inside the products page's picker modal, and both render the same
+  `components/media/Browser.vue`. A feature added to one must not be a feature added to a copy.
+- **The dashboard filters through the API, never in the browser.** Filtering the rows already
+  loaded searches one page and calls it the library. If a new filter cannot be expressed in
+  `MediaQuery`, add it there — and to all three stores and the contract suite — rather than
+  working around it in the client.
 - New backends: see [docs/adding-a-backend.md](docs/adding-a-backend.md).
 
 ## Documentation

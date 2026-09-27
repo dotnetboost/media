@@ -18,6 +18,7 @@ Start with the [README](../README.md) for the 5-minute path. These pages go furt
 | [Querying](querying.md) | Filtering, paging, categories and tags |
 | [Validation and security](validation-and-security.md) | Size limits, allow-lists, content sniffing, path safety, authorization |
 | [REST API](rest-api.md) | Every endpoint and its status codes |
+| [Dashboard](dashboard.md) | The Nuxt client in `clients/dashboard` |
 
 ## Configuring it
 

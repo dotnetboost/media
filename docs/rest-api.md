@@ -80,9 +80,15 @@ client a map of it.
 | `tag` | one whole tag — not a prefix |
 | `contentType` | a prefix, so `image/` selects every image |
 | `uploadedBy` | one uploader |
+| `search` | matches anywhere in the file name, case-insensitively |
 | `includeDeleted` | include soft-deleted files (default `false`) |
-| `oldestFirst` | reverse the order (default: newest first) |
+| `sortBy` | `createdAt` (default), `fileName` or `size`. An unrecognised value falls back to the default rather than failing the request |
+| `descending` | default `true`, so the default order is newest first |
 | `skip`, `take` | paging; `take` is capped at 500 |
+
+```
+GET /api/media?search=invoice&category=invoices&sortBy=size&descending=true&take=20
+```
 
 ```json
 { "items": [ … ], "total": 128, "skip": 0, "take": 50 }

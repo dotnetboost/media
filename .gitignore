@@ -30,3 +30,5 @@ nupkgs/
 samples/**/*.db
 samples/**/*.db-shm
 samples/**/*.db-wal
+# The local storage backend's root: files uploaded while running the sample.
+samples/**/uploads/

@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `MediaQuery.Search` — matches anywhere in the file name, case-insensitively. Both sides are
+  lowered before the comparison, because `LIKE` is case-sensitive on PostgreSQL and insensitive on
+  SQL Server; matching the column's collation would make the documented behaviour true on one
+  engine only. A value containing `%` or `_` is escaped.
+- `MediaQuery.SortBy` (`MediaSortBy.CreatedAt`, `FileName` or `Size`) and `MediaQuery.Descending`.
+  Every ordering ends on the id, so rows that tie on the sort column still page stably.
+- `GET api/media` takes `search`, `sortBy` and `descending`. An unrecognised `sortBy` falls back to
+  the default rather than failing the request.
+- `clients/dashboard` — a Nuxt 4 client, on the same template as the DotNetBoost.Settings and
+  DotNetBoost.MultiLingual dashboards. A **Media** page over the whole library (search, category,
+  tag and kind filters, six sort orders, pagination, upload, rename, retag, delete) and a
+  **Products** page whose attach button opens that same browser in a modal. The Aspire AppHost
+  starts it alongside the API.
+
+### Changed
+
+- `MediaQuery.OldestFirst` is replaced by `SortBy` + `Descending`. `new MediaQuery { OldestFirst = true }`
+  becomes `new MediaQuery { Descending = false }`.
+- `samples/SampleApp` maps its own routes under `/api` (`/api/products`), so the dashboard reaches
+  the library's endpoints and the sample's through one proxy — as the sibling samples do.
+
 ## [1.0.0-preview.1]
 
 First public preview. Everything below is new.
