@@ -127,3 +127,37 @@ public class MediaFile
     /// <summary>True while the file has not been deleted.</summary>
     public bool IsDeleted => DeletedAt is not null;
 }
+
+/// <summary>
+/// The stored form of <see cref="MediaFile.Category"/>, and the rules for writing one down.
+/// <para>
+/// Lower-cased, like <see cref="MediaTags"/> and <see cref="MediaRoles"/>, so that
+/// <c>Product-Images</c> and <c>product-images</c> are one bucket rather than two. That matters
+/// more here than for a tag: the category leads the generated storage path, so two spellings would
+/// also lay the same files out under two directories in the backend.
+/// </para>
+/// </summary>
+public static class MediaCategories
+{
+    /// <summary>The longest a category may be, and the width of the column holding it.</summary>
+    public const int MaxLength = 64;
+
+    /// <summary>
+    /// The stored form of <paramref name="category"/>: trimmed and lower-cased. <c>null</c> and
+    /// whitespace become <c>null</c>, so "no category" is a NULL column rather than an empty string
+    /// that would lead a storage path with a stray separator.
+    /// </summary>
+    /// <exception cref="ArgumentException">Longer than <see cref="MaxLength"/> characters.</exception>
+    public static string? Normalize(string? category)
+    {
+        var trimmed = category?.Trim();
+
+        if (string.IsNullOrEmpty(trimmed))
+            return null;
+
+        if (trimmed.Length > MaxLength)
+            throw new ArgumentException($"Category '{trimmed}' is longer than {MaxLength} characters.", nameof(category));
+
+        return trimmed.ToLowerInvariant();
+    }
+}

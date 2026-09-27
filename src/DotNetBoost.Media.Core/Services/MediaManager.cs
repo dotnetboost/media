@@ -45,11 +45,13 @@ internal sealed partial class MediaManager(
             .ConfigureAwait(false);
 
         var provider = upload.StorageProvider is { } named ? storage.Get(named) : storage.Default;
+        var category = MediaCategories.Normalize(upload.Category);
 
         // The id is assigned here, before anything is written, because the storage path is derived
-        // from it — which is what keeps the path free of anything the uploader chose.
+        // from it — which is what keeps the path free of anything the uploader chose. The category
+        // is normalized first, so the path and the column agree about which bucket this is.
         var id   = Guid.NewGuid();
-        var path = MediaPaths.Validate(keyGenerator.Generate(id, fileName, upload.Category));
+        var path = MediaPaths.Validate(keyGenerator.Generate(id, fileName, category));
 
         var measured = new MeasuringStream(body, options.MaxFileSizeBytes, options.ComputeChecksum);
 
@@ -97,7 +99,7 @@ internal sealed partial class MediaManager(
             StorageContainer = stored.Container,
             StoragePath      = stored.Path,
             Checksum         = checksum,
-            Category         = upload.Category,
+            Category         = category,
             Tags             = tags,
             Metadata         = metadata,
             UploadedBy       = upload.UploadedBy,
@@ -170,8 +172,10 @@ internal sealed partial class MediaManager(
         if (update.FileName is not null)
             file.FileName = _validator.ValidateName(update.FileName);
 
+        // An empty string is how a caller says "no category", and Normalize turns it into the NULL
+        // the column wants. The stored bytes do not move: the path was fixed at upload.
         if (update.Category is not null)
-            file.Category = update.Category;
+            file.Category = MediaCategories.Normalize(update.Category);
 
         if (update.Tags is not null)
             file.Tags = MediaValidator.ValidateAnnotations(update.Tags, null).Tags;
@@ -243,6 +247,11 @@ internal sealed partial class MediaManager(
                 "MediaQuery.Unattached and an owner filter ask opposite questions: the first wants files " +
                 "nothing is using, the second wants the files one entity is using.");
         }
+
+        // Normalized here rather than in each store, which the contract keeps deliberately dumb:
+        // the column is lower-cased on write, so a filter that was not would silently match nothing.
+        if (resolved.Category is not null)
+            resolved = resolved with { Category = MediaCategories.Normalize(resolved.Category) };
 
         var rows  = await store.QueryAsync(resolved, ct).ConfigureAwait(false);
         var total = await store.CountAsync(resolved, ct).ConfigureAwait(false);

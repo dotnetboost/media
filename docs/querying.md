@@ -81,6 +81,12 @@ query, which is why it is on the page rather than on every read.
 A **category** is one coarse bucket, and it leads the storage path — so it is also how the files
 are laid out in the backend. Use it for kinds of file: `avatars`, `invoices`, `product-images`.
 
+Trimmed and lower-cased on write, like a tag, and at most 64 characters. Leading the storage path is
+why that matters here: two spellings would be two buckets *and* two directories in the backend
+holding the same kind of file. The filter is lower-cased too, so it matches however it is asked for.
+A category is what a file *is*; a [role](attaching-to-entities.md#category-is-not-role) is what one
+entity uses it *for*.
+
 **Tags** are free-form labels, normalised on the way in (trimmed, lower-cased, de-duplicated,
 ordered) and stored in one column, comma-delimited *and* comma-surrounded:
 

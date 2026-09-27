@@ -82,7 +82,7 @@ other one, "which files does this entity use", and returns each of them once.
 
 `MediaRoles` names the three this library expects to see (`Default`, `Primary`, `Gallery`) but the
 set is open: `hero`, `thumbnail`, `datasheet` are all fine. Roles are lower-cased on write, so
-`Primary` and `primary` are one role rather than two.
+`Primary` and `primary` are one role rather than two — as categories and tags are.
 
 A role is never null. It defaults to `MediaRoles.Default`, which is what lets the uniqueness
 constraint cover all four columns — a nullable column inside it would behave differently on each
@@ -99,6 +99,11 @@ The two are close enough to confuse, and they are different axes:
 
 One file can be `Category = "product-images"` while being `primary` on one product and `gallery` on
 another.
+
+Both are lower-cased on write. For a category that matters more than for a role: it leads the
+generated storage path, so `Product-Images` and `product-images` would otherwise be two buckets *and*
+two directories in the backend holding the same kind of file. A category filter is lower-cased too,
+so it matches however it is spelled.
 
 ```csharp
 await media.For(product).UploadAsync(upload with { Category = "manuals" }, ct);

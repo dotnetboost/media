@@ -43,6 +43,12 @@ new migration**: the model gained an entity type and lost two properties.
   `MediaFileResponse` loses the two owner fields and gains `attachments` on the single-file read
   (`null` in listings). `POST`/`DELETE /api/media/{id}/attachments` and
   `PUT /api/media/attachments/order` replace them.
+- `MediaFile.Category` is trimmed and lower-cased on write, as tags and roles are, and a category
+  filter is lower-cased to match. It matters more for a category than for either: the category leads
+  the generated storage path, so `Product-Images` and `product-images` were two buckets *and* two
+  directories in the backend holding the same kind of file. Rows written before this keep whatever
+  case they were stored under and stop matching a normalized filter; there are no released
+  consumers, so no backfill ships. An empty string now clears a category rather than storing one.
 - Ordering by an entity's own arrangement is defined as its lowest role then its lowest position,
   taken independently. The exact `(role, position)` pair needs a correlated subquery ordered and
   limited inside an `ORDER BY`, which translates unevenly across three SQL dialects and not at all
@@ -63,6 +69,9 @@ Unrelated to the above:
 
 ### Added
 
+- `MediaCategories.Normalize` and `MediaCategories.MaxLength`. The length was a literal `64`
+  repeated in the EF Core mapping and the Dapper DDL while every other column's came from a Core
+  constant; both now read it from one place.
 - `MediaAttachment` and `MediaRoles`. A role is what an entity uses a file *for* — `primary`,
   `gallery`, `seo`, or whatever an application means. It lives on the link and not on the file
   because the same image can be one product's main photo and another's third gallery shot. Free

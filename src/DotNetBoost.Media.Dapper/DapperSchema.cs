@@ -97,7 +97,7 @@ public static class DapperSchema
         const int provider    = 64;
         const int container   = 512;
         const int checksum    = 64;   // lowercase hex SHA-256
-        const int category    = 64;
+        var category          = MediaCategories.MaxLength;  // 64
         const int uploadedBy  = 256;
 
         // Index names match what EF Core generates for the same model, so the two stores'

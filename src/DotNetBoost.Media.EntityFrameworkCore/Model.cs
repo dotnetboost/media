@@ -69,7 +69,7 @@ public sealed class MediaFileConfiguration(MediaModelOptions options) : IEntityT
         // Lowercase hex SHA-256: always 64 characters, so the column is fixed at that.
         builder.Property(f => f.Checksum).HasMaxLength(64);
 
-        builder.Property(f => f.Category).HasMaxLength(64);
+        builder.Property(f => f.Category).HasMaxLength(MediaCategories.MaxLength);
         builder.Property(f => f.Tags).HasMaxLength(MediaTags.MaxLength);
         builder.Property(f => f.Metadata).HasMaxLength(MediaMetadata.MaxLength);
         builder.Property(f => f.UploadedBy).HasMaxLength(256);
