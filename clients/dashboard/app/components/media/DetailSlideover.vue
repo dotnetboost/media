@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MediaFile } from '~/types'
+import type { MediaAttachment, MediaFile } from '~/types'
 
 /**
  * One file in full: a preview, everything the row records, and the fields that can be changed.
@@ -9,12 +9,19 @@ import type { MediaFile } from '~/types'
  */
 const props = defineProps<{
   file: MediaFile
+  /**
+   * Everything using this file. Passed in rather than read from `file.attachments`, because the row
+   * in a listing does not carry them — the browser reads the single file for this.
+   */
+  attachments?: MediaAttachment[]
+  /** While the attachments are being read, so the panel does not claim "used by nothing" too early. */
+  loadingAttachments?: boolean
   busy?: boolean
 }>()
 
 const emit = defineEmits<{
   save: [patch: { fileName: string, category: string, tags: string[] }]
-  detach: []
+  detach: [attachment: MediaAttachment]
   remove: []
 }>()
 
@@ -30,6 +37,25 @@ watch(() => props.file, (file) => {
   category.value = file.category ?? ''
   tags.value = [...file.tags]
 }, { deep: true })
+
+/**
+ * The links, grouped by the entity holding them, so a file used twice by one product reads as one
+ * product with two roles rather than as two unrelated rows.
+ */
+const usedBy = computed(() => {
+  const groups = new Map<string, { entityName: string, entityId: string, links: MediaAttachment[] }>()
+
+  for (const attachment of props.attachments ?? []) {
+    const key = `${attachment.ownerEntityName}/${attachment.ownerEntityId}`
+    const group = groups.get(key)
+      ?? { entityName: attachment.ownerEntityName, entityId: attachment.ownerEntityId, links: [] }
+
+    group.links.push(attachment)
+    groups.set(key, group)
+  }
+
+  return [...groups.values()]
+})
 
 const dirty = computed(() =>
   fileName.value.trim() !== props.file.fileName
@@ -112,23 +138,51 @@ const facts = computed(() => [
           <UInputTags v-model="tags" placeholder="Add a tag…" class="w-full" />
         </UFormField>
 
-        <UFormField v-if="file.ownerEntityName" label="Attached to">
-          <div class="flex items-center gap-2">
-            <UBadge
-              color="primary"
-              variant="subtle"
-              icon="i-lucide-link"
-              :label="`${file.ownerEntityName} ${file.ownerEntityId}`"
-            />
-            <UButton
-              icon="i-lucide-unlink"
-              color="neutral"
-              variant="ghost"
-              size="xs"
-              label="Detach"
-              :loading="busy"
-              @click="emit('detach')"
-            />
+        <UFormField
+          label="Used by"
+          :description="usedBy.length > 1
+            ? 'One file, several entities — nothing is copied, they all point at the same bytes. Detaching removes one link; deleting the file removes it from all of them.'
+            : 'Which entities this file is attached to. Detaching removes the link, not the file.'"
+        >
+          <USkeleton v-if="loadingAttachments" class="h-7 w-40" />
+
+          <p v-else-if="!usedBy.length" class="text-sm text-muted">
+            Nothing — it is in the library, waiting to be attached.
+          </p>
+
+          <div v-else class="flex flex-col gap-1.5">
+            <div
+              v-for="entity in usedBy"
+              :key="`${entity.entityName}/${entity.entityId}`"
+              class="flex flex-wrap items-center gap-1.5"
+            >
+              <UBadge
+                color="primary"
+                variant="subtle"
+                icon="i-lucide-link"
+                :label="`${entity.entityName} ${entity.entityId}`"
+              />
+
+              <UBadge
+                v-for="link in entity.links"
+                :key="link.id"
+                color="neutral"
+                variant="outline"
+                size="sm"
+                :label="link.role"
+              />
+
+              <UButton
+                icon="i-lucide-unlink"
+                color="neutral"
+                variant="ghost"
+                size="xs"
+                :aria-label="`Detach from ${entity.entityName} ${entity.entityId}`"
+                label="Detach"
+                :loading="busy"
+                @click="emit('detach', entity.links[0]!)"
+              />
+            </div>
           </div>
         </UFormField>
 

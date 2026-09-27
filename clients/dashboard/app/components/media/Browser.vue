@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MediaFile } from '~/types'
+import type { MediaAttachment, MediaFile } from '~/types'
 
 /**
  * The media library: filter, sort, page, upload, inspect, delete.
@@ -14,8 +14,12 @@ import type { MediaFile } from '~/types'
 const props = withDefaults(defineProps<{
   /** Restricts the listing to one entity's files. */
   owner?: { entityName: string, entityId: string }
+  /** Narrows that to one role. Needs `owner`; the API refuses a role without one. */
+  role?: string
   /** Uploads land attached to this entity. */
   uploadOwner?: { entityName: string, entityId: string }
+  /** What that entity uses an upload for. Only meaningful with `uploadOwner`. */
+  uploadRole?: string
   /** Shows an "Attach" action on each file instead of opening its details. */
   selectable?: boolean
   /** Ids already attached, shown as such rather than offered again. */
@@ -36,10 +40,16 @@ const emit = defineEmits<{
 const owner = computed(() => props.owner)
 
 const library = useMediaLibrary({ owner, pageSize: props.pageSize })
+
+// A role belongs in the query rather than in a filter over the rows already loaded, for the reason
+// every other filter here does: filtering one page searches one page.
+watchEffect(() => {
+  library.query.role = props.role
+})
 const {
   query, items, total, pending, loadError, busy,
   pageCount, isFiltered, categoryOptions, tagOptions,
-  load, upload, update, detach, remove, reset
+  load, upload, update, detach, readOne, remove, reset
 } = library
 
 const uploading = ref(false)
@@ -50,6 +60,68 @@ const deleting = ref<MediaFile | null>(null)
 const selectedFile = computed(() => selected.value
   ? items.value.find(file => file.id === selected.value!.id) ?? selected.value
   : null)
+
+/**
+ * Who is using the selected file. A listing does not carry the links — a page of files would need a
+ * query each — so opening one file reads it on its own. Re-read after every change, because
+ * attaching and detaching are exactly what this shows.
+ */
+const attachments = ref<MediaAttachment[]>([])
+const loadingAttachments = ref(false)
+
+async function loadAttachments(id: string | undefined) {
+  if (!id) {
+    attachments.value = []
+    return
+  }
+
+  loadingAttachments.value = true
+
+  try {
+    attachments.value = (await readOne(id)).attachments ?? []
+  } catch {
+    // Not worth an error banner: the panel says "used by" nothing rather than lying about a count,
+    // and every action on it reports its own failure.
+    attachments.value = []
+  } finally {
+    loadingAttachments.value = false
+  }
+}
+
+watch(() => selected.value?.id, id => loadAttachments(id), { immediate: true })
+
+/** The file being deleted, with its links, so the confirmation can say what else loses it. */
+const deletingUsedBy = ref<MediaAttachment[]>([])
+
+async function confirmDelete(file: MediaFile) {
+  // The links this file already has loaded, before closing the panel that holds them.
+  const known = selected.value?.id === file.id ? attachments.value : null
+
+  // Close the details first. The confirmation is what carries the warning about every entity losing
+  // the file, and it opens underneath the slideover's overlay — dimmed, and impossible to read or
+  // click — if the panel that raised it is still open.
+  selected.value = null
+
+  deleting.value = file
+  deletingUsedBy.value = known
+    ?? await readOne(file.id).then(read => read.attachments ?? []).catch(() => [])
+}
+
+/**
+ * What deleting this file takes with it. Deleting is not detaching: the bytes go, and every entity
+ * using the file loses it at once. Saying how many is the difference between an informed click and
+ * a surprise.
+ */
+const deleteWarning = computed(() => {
+  const entities = new Set(deletingUsedBy.value.map(a => `${a.ownerEntityName}/${a.ownerEntityId}`))
+
+  return entities.size === 0
+    ? 'Nothing is using it.'
+    : entities.size === 1
+      ? `It is attached to ${[...entities][0]!.replace('/', ' ')}, which loses it.`
+      : `It is attached to ${entities.size} entities, and all of them lose it: `
+        + `${[...entities].map(key => key.replace('/', ' ')).join(', ')}.`
+})
 
 const attached = (file: MediaFile) => props.attachedIds.includes(file.id)
 
@@ -65,7 +137,7 @@ const range = computed(() => {
 })
 
 async function onUpload(input: { file: File, category?: string, tags?: string[] }) {
-  const result = await upload({ ...input, owner: props.uploadOwner })
+  const result = await upload({ ...input, owner: props.uploadOwner, role: props.uploadRole })
 
   if (result) {
     uploading.value = false
@@ -88,12 +160,18 @@ async function onSave(patch: { fileName: string, category: string, tags: string[
   emit('changed')
 }
 
-async function onDetach() {
+async function onDetach(attachment: MediaAttachment) {
   if (!selectedFile.value) {
     return
   }
 
-  await detach(selectedFile.value.id)
+  // No role, so the file leaves that entity entirely rather than only the role that happened to be
+  // listed first.
+  await detach(
+    selectedFile.value.id,
+    { entityName: attachment.ownerEntityName, entityId: attachment.ownerEntityId })
+
+  await loadAttachments(selectedFile.value.id)
   emit('changed')
 }
 
@@ -106,6 +184,7 @@ async function onDelete() {
   await remove(file)
 
   deleting.value = null
+  deletingUsedBy.value = []
   if (selected.value?.id === file.id) {
     selected.value = null
   }
@@ -250,17 +329,19 @@ onMounted(load)
       v-if="selectedFile"
       :open="selected !== null"
       :file="selectedFile"
+      :attachments="attachments"
+      :loading-attachments="loadingAttachments"
       :busy="busy === selectedFile.id"
       @update:open="!$event && (selected = null)"
       @save="onSave"
       @detach="onDetach"
-      @remove="deleting = selectedFile"
+      @remove="confirmDelete(selectedFile)"
     />
 
     <ConfirmModal
       :open="deleting !== null"
       :title="`Delete ${deleting?.fileName}?`"
-      description="The bytes are removed from the storage backend. With soft delete on — the default — the row is kept as a record that the file existed, but the content is gone either way."
+      :description="`The bytes are removed from the storage backend, and every link to the file goes with them. ${deleteWarning} With soft delete on — the default — the row is kept as a record that the file existed, but the content is gone either way.`"
       confirm-label="Delete"
       :loading="busy === deleting?.id"
       @update:open="!$event && (deleting = null)"

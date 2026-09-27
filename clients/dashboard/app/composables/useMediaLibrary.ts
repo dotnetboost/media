@@ -70,6 +70,8 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
           contentType: query.contentType || undefined,
           ownerEntityName: owner?.entityName,
           ownerEntityId: owner?.entityId,
+          role: query.role || undefined,
+          unattached: query.unattached || undefined,
           sortBy: query.sortBy,
           descending: query.descending,
           skip: (query.page - 1) * query.pageSize,
@@ -133,6 +135,8 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
     tags?: string[]
     uploadedBy?: string
     owner?: { entityName: string, entityId: string }
+    /** What the owner uses it for. Only meaningful with an owner, which does the attaching. */
+    role?: string
   }) {
     const body = new FormData()
     body.append('file', input.file, input.file.name)
@@ -141,9 +145,12 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
     if (input.tags?.length) body.append('tags', input.tags.join(','))
     if (input.uploadedBy) body.append('uploadedBy', input.uploadedBy)
 
+    // With an owner the API uploads and attaches in one request. Without one the file lands in the
+    // library unattached, waiting to be claimed — which is what the Media page does.
     if (input.owner) {
       body.append('ownerEntityName', input.owner.entityName)
       body.append('ownerEntityId', input.owner.entityId)
+      if (input.role) body.append('role', input.role)
     }
 
     return run(
@@ -161,21 +168,68 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
     'Could not save the file'
   )
 
-  const attach = (id: string, owner: { entityName: string, entityId: string }) => run(
+  /**
+   * Attaches a file to an entity. A link of its own, not a field on the file — so this adds the
+   * entity to whoever is already using the file rather than taking it off them.
+   *
+   * `replace` takes a single-valued role over from whatever held it; without it the file is
+   * appended, as a gallery image is.
+   */
+  const attach = (
+    id: string,
+    owner: { entityName: string, entityId: string },
+    role?: string,
+    replace = false
+  ) => run(
     id,
-    () => $fetch<MediaFile>(`/api/media/${id}`, {
-      method: 'PATCH',
-      body: { ownerEntityName: owner.entityName, ownerEntityId: owner.entityId }
+    () => $fetch<MediaFile>(`/api/media/${id}/attachments`, {
+      method: 'POST',
+      body: { ownerEntityName: owner.entityName, ownerEntityId: owner.entityId, role, replace }
     }),
     attached => `Attached ${attached.fileName}`,
     'Could not attach the file'
   )
 
-  const detach = (id: string) => run(
+  /**
+   * Removes one entity's link to a file. The file stays in the library, and stays attached to every
+   * other entity using it — this is "take it off this product", not "delete it".
+   *
+   * No role removes it from every role on that entity.
+   */
+  const detach = (
+    id: string,
+    owner: { entityName: string, entityId: string },
+    role?: string
+  ) => run(
     id,
-    () => $fetch<MediaFile>(`/api/media/${id}`, { method: 'PATCH', body: { clearOwner: true } }),
+    () => $fetch<MediaFile>(`/api/media/${id}/attachments`, {
+      method: 'DELETE',
+      query: { ownerEntityName: owner.entityName, ownerEntityId: owner.entityId, role }
+    }),
     detached => `Detached ${detached.fileName}`,
     'Could not detach the file'
+  )
+
+  /**
+   * One file with its attachments, which a listing does not carry. Used when the details of a
+   * single file are opened, and before offering to delete one — a delete takes the file out of
+   * every entity using it, and the count is what makes that visible.
+   */
+  const readOne = (id: string) => $fetch<MediaFile>(`/api/media/${id}`)
+
+  /** Saves the order one entity put a role's files in. */
+  const reorder = (
+    owner: { entityName: string, entityId: string },
+    role: string,
+    mediaFileIds: string[]
+  ) => run(
+    null,
+    () => $fetch('/api/media/attachments/order', {
+      method: 'PUT',
+      body: { ownerEntityName: owner.entityName, ownerEntityId: owner.entityId, role, mediaFileIds }
+    }),
+    () => 'Order saved',
+    'Could not save the order'
   )
 
   const remove = (file: MediaFile) => run(
@@ -230,6 +284,6 @@ export function useMediaLibrary(options: MediaLibraryOptions = {}) {
   return {
     query, items, total, pending, loadError, busy,
     pageCount, isFiltered, categoryOptions, tagOptions,
-    load, upload, update, attach, detach, remove, reset, sortBy
+    load, upload, update, attach, detach, readOne, reorder, remove, reset, sortBy
   }
 }
