@@ -107,6 +107,21 @@ public static class MediaRoles
 }
 
 /// <summary>
+/// One of an entity's files together with what that entity uses it for — what a product page needs
+/// to draw a hero image, an ordered gallery and an SEO picture from one read.
+/// <para>
+/// Note that this is per <i>link</i>, not per file: a file an entity attached as both its
+/// <c>primary</c> and its <c>seo</c> image appears twice, once under each role. That is the
+/// difference between this and <c>IMediaAccessor.ListAsync</c>, which answers "what files does this
+/// entity use" and returns each of them once.
+/// </para>
+/// </summary>
+/// <param name="File">The file.</param>
+/// <param name="Role">What the entity uses it for.</param>
+/// <param name="SortOrder">Its position within that role.</param>
+public sealed record MediaAttachedFile(MediaFileInfo File, string Role, int SortOrder);
+
+/// <summary>
 /// An immutable snapshot of one attachment — what the manager hands back, alongside the
 /// <see cref="MediaFileInfo"/> it links to.
 /// </summary>

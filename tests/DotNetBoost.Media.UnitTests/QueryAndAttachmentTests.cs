@@ -435,6 +435,61 @@ public class RoleTests
     }
 
     [Fact]
+    public async Task ListWithRoles_pairs_each_file_with_what_it_is_used_for()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        var hero = await harness.Media.For(product).UploadAsync(
+            TestMedia.Upload(TestMedia.Png(), "hero.png", role: MediaRoles.Primary));
+        var one  = await harness.Media.For(product).UploadAsync(
+            TestMedia.Upload(TestMedia.Png(32), "one.png", role: MediaRoles.Gallery));
+        var two  = await harness.Media.For(product).UploadAsync(
+            TestMedia.Upload(TestMedia.Png(48), "two.png", role: MediaRoles.Gallery));
+
+        var attached = await harness.Media.For(product).ListWithRolesAsync();
+
+        // Role order first, then position within the role.
+        Assert.Equal(
+            [(one.Id, MediaRoles.Gallery, 0), (two.Id, MediaRoles.Gallery, 1), (hero.Id, MediaRoles.Primary, 0)],
+            attached.Select(a => (a.File.Id, a.Role, a.SortOrder)));
+    }
+
+    [Fact]
+    public async Task ListWithRoles_lists_a_file_once_per_role_it_holds()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+        var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
+
+        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("seo", file.Id);
+
+        // The question is "what does this entity use, and for what", so one file under two roles is
+        // two answers — unlike ListAsync, which asks which files it uses and returns each once.
+        var attached = await harness.Media.For(product).ListWithRolesAsync();
+
+        Assert.Equal([MediaRoles.Primary, "seo"], attached.Select(a => a.Role));
+        Assert.Single(await harness.Media.For(product).ListAsync());
+    }
+
+    [Fact]
+    public async Task ListWithRoles_skips_a_link_whose_file_was_soft_deleted()
+    {
+        var harness = Harness.Create(o => o.SoftDelete = true);
+        var product = new Product { Id = 1 };
+
+        var kept    = await harness.Media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png(), "kept.png"));
+        var deleted = await harness.Media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png(32), "gone.png"));
+
+        await harness.Media.DeleteAsync(deleted.Id);
+
+        var attached = await harness.Media.For(product).ListWithRolesAsync();
+
+        Assert.Equal(kept.Id, Assert.Single(attached).File.Id);
+    }
+
+    [Fact]
     public async Task A_role_longer_than_the_limit_is_refused()
     {
         var harness = Harness.Create();

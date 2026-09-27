@@ -417,6 +417,26 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     }
 
     /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachedFile>> ListWithRolesAsync(CancellationToken ct = default)
+    {
+        // Two reads, not one per file: the links in the entity's own order, and the live files they
+        // point at. Pairing them here is what keeps an application from asking per role or per file.
+        var links = await store.ListAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
+        var files = await ListCoreAsync(role: null, ct).ConfigureAwait(false);
+
+        var byId = files.ToDictionary(f => f.Id);
+
+        // A link whose file is missing from the live listing is a link to a soft-deleted file. It is
+        // skipped rather than returned with a tombstone, because every other read here means "live".
+        return
+        [
+            .. links
+                .Where(link => byId.ContainsKey(link.MediaFileId))
+                .Select(link => new MediaAttachedFile(byId[link.MediaFileId], link.Role, link.SortOrder))
+        ];
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<MediaFileInfo>> ListByCategoryAsync(
         string category, CancellationToken ct = default)
     {

@@ -180,6 +180,18 @@ public interface IMediaAccessor
     Task<IReadOnlyList<MediaFileInfo>> ListByRoleAsync(string role, CancellationToken ct = default);
 
     /// <summary>
+    /// Every live file attached to this entity <b>with the role it holds</b>, by role then position —
+    /// what a product page needs to draw its hero image, its ordered gallery and its SEO picture from
+    /// one read instead of one request per role.
+    /// <para>
+    /// Per link rather than per file: a file attached as both <c>primary</c> and <c>seo</c> is listed
+    /// twice, once under each role, which is the question being asked. <see cref="ListAsync"/> asks
+    /// the other one and returns each file once.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlyList<MediaAttachedFile>> ListWithRolesAsync(CancellationToken ct = default);
+
+    /// <summary>
     /// Its live files in one storage category, newest first. Note that a category is a property of
     /// the file — the bucket its bytes live in — while a role is a property of this link; see
     /// <see cref="ListByRoleAsync"/>.
