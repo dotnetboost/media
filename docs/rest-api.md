@@ -24,8 +24,16 @@ app.MapMediaEndpoints();            // default prefix: /api/media
 | `GET` | `/api/media/{id}` | One file's metadata |
 | `GET` | `/api/media/{id}/content` | The bytes — supports `Range` and `ETag` |
 | `GET` | `/api/media/{id}/url` | A direct link, when the backend mints one |
-| `PATCH` | `/api/media/{id}` | Change name, category, tags, metadata or owner |
-| `DELETE` | `/api/media/{id}` | Delete |
+| `PATCH` | `/api/media/{id}` | Change name, category, tags or metadata |
+| `DELETE` | `/api/media/{id}` | Delete the file, and every link to it |
+| `POST` | `/api/media/{id}/attachments` | Attach the file to an entity |
+| `DELETE` | `/api/media/{id}/attachments` | Detach it from one entity, leaving the file alone |
+| `PUT` | `/api/media/attachments/order` | Reorder one entity's files within a role |
+
+Note what the two deletes mean. `DELETE /api/media/{id}` removes the file from the library and
+therefore from every entity using it; `DELETE /api/media/{id}/attachments` removes it from one
+entity and touches neither the file nor its bytes. A UI offering "remove this image from the
+product" wants the second.
 
 ## POST /api/media
 
@@ -44,7 +52,12 @@ curl -F "file=@invoice.pdf" \
 | `category` | the bucket to sort it into |
 | `tags` | comma-separated |
 | `uploadedBy` | who uploaded it |
-| `ownerEntityName` + `ownerEntityId` | the entity to attach it to; both or neither |
+| `ownerEntityName` + `ownerEntityId` | an entity to attach it to as well; both or neither |
+| `role` | what that entity uses it for — `primary`, `gallery`, `seo`. Needs an owner |
+
+With an owner the file is stored and attached in one request, which is what a form that already
+knows its product does. Without one it lands in the library attached to nothing, waiting for a
+`POST` to `{id}/attachments` — the draft-form case.
 
 `201 Created`, with `Location: /api/media/{id}` and the row:
 
@@ -58,8 +71,7 @@ curl -F "file=@invoice.pdf" \
   "category": "invoices",
   "tags": ["2026", "paid"],
   "metadata": {},
-  "ownerEntityName": "Invoice",
-  "ownerEntityId": "77",
+  "attachments": null,
   "uploadedBy": null,
   "createdAt": "2026-09-27T10:00:00Z",
   "updatedAt": null,
@@ -75,14 +87,16 @@ client a map of it.
 
 | Query | |
 |---|---|
-| `ownerEntityName`, `ownerEntityId` | files attached to one entity |
+| `ownerEntityName`, `ownerEntityId` | files attached to one entity. A file that entity attached under several roles is still returned once |
+| `role` | narrows that to one role. Needs an owner: a role belongs to a link, so on its own it would match every entity's gallery at once |
+| `unattached` | only files nothing is using — for sweeping up uploads nobody ever claimed. Cannot be combined with an owner, which asks the opposite question |
 | `category` | one bucket |
 | `tag` | one whole tag — not a prefix |
 | `contentType` | a prefix, so `image/` selects every image |
 | `uploadedBy` | one uploader |
 | `search` | matches anywhere in the file name, case-insensitively |
 | `includeDeleted` | include soft-deleted files (default `false`) |
-| `sortBy` | `createdAt` (default), `fileName` or `size`. An unrecognised value falls back to the default rather than failing the request |
+| `sortBy` | `createdAt` (default), `fileName`, `size`, or `sortOrder` for the order an entity put its own files in. An unrecognised value falls back to the default rather than failing the request; `sortOrder` needs an owner and is refused without one |
 | `descending` | default `true`, so the default order is newest first |
 | `skip`, `take` | paging; `take` is capped at 500 |
 
@@ -125,14 +139,90 @@ client looking for the wrong problem. Fall back to `/content`.
 ```
 
 Omitted properties are left alone. `tags` and `metadata` replace outright — send `[]` or `{}` to
-clear. `clearOwner: true` detaches the file.
+clear.
 
-The bytes, their size, their checksum and their location are not editable.
+The bytes, their size, their checksum and their location are not editable. Neither are attachments:
+they are rows of their own, and one file may be attached to many entities, which no field on a
+`PATCH` body could express. See the three routes below.
 
 ## DELETE /api/media/{id}
 
 `204` when a live file was deleted, `404` when there was none. The bytes always go; the row stays
 with `deletedAt` set unless soft delete is off.
+
+**Every attachment of the file goes with it**, so the file leaves every entity that was using it.
+That is what deleting a file means; `DELETE /api/media/{id}/attachments` is what removes it from one
+entity. Attachment rows are removed outright even under soft delete — a tombstoned file that still
+read as attached to a live entity would be worse than no record at all.
+
+`GET /api/media/{id}` returns the links, so a client can say "used by 4 entities" before offering
+this.
+
+## GET /api/media/{id}
+
+The row, plus an `attachments` array — the one read that carries it:
+
+```json
+{
+  "id": "9f1cb3e0-d4a9-4f7a-b0e2-c1d5f6a78901",
+  "fileName": "hero.png",
+  "attachments": [
+    { "id": "…", "ownerEntityName": "Product", "ownerEntityId": "1", "role": "primary", "sortOrder": 0, "createdAt": "2026-09-27T10:00:00Z" },
+    { "id": "…", "ownerEntityName": "Product", "ownerEntityId": "9", "role": "gallery", "sortOrder": 2, "createdAt": "2026-09-27T10:05:00Z" }
+  ]
+}
+```
+
+A listing returns `null` there rather than filling it: a page of fifty files would need a query per
+file, and a library grid does not need them.
+
+## POST /api/media/{id}/attachments
+
+```json
+{ "ownerEntityName": "Product", "ownerEntityId": "1", "role": "primary", "replace": true }
+```
+
+`200` with the file and its attachments. Not `201`: attaching is idempotent, so a repeat is not a
+new resource.
+
+`replace` is what makes a single-valued role single-valued — `true` takes the role over from
+whatever held it, `false` appends as a gallery does. Nothing in the schema knows that `primary`
+holds one file and `gallery` holds many, so the request says which it means. A file it displaces is
+only detached, never deleted.
+
+`role` defaults to `default` and is lower-cased. An owner named by halves — a type with no key, or a
+key with no type — is a `400`.
+
+## DELETE /api/media/{id}/attachments
+
+```
+DELETE /api/media/{id}/attachments?ownerEntityName=Product&ownerEntityId=1&role=gallery
+```
+
+`200` with the file and its remaining attachments, or `404` when there was no such link. **The file
+and its bytes are untouched**, and it stays attached to every other entity using it.
+
+Omit `role` to remove the file from every role on that entity.
+
+The owner is in the query rather than an attachment id in the path because a client already knows
+which entity it is acting for — a product page removing an image knows the product — and would
+otherwise have to read the file first to learn an id it never needed.
+
+## PUT /api/media/attachments/order
+
+```json
+{ "ownerEntityName": "Product", "ownerEntityId": "1", "role": "gallery", "mediaFileIds": ["…", "…"] }
+```
+
+`204`. Send **every** file attached to that entity in that role, in the order wanted: a partial list
+has no unambiguous meaning, since the files left out would have no defined position. Anything else
+is a `400`.
+
+## No "delete everything this entity has"
+
+There is deliberately no endpoint for `IMediaAccessor.DeleteAllAsync`. It exists for when an entity
+is deleted, and that belongs in your own code next to deleting the entity — not in one request that
+destroys an arbitrary entity's media.
 
 ## Status codes
 
@@ -175,7 +265,7 @@ app.MapGet("/invoices/{id:int}/pdf", async (int id, AppDbContext db, IMediaManag
     var invoice = await db.Invoices.FindAsync([id], ct);
     if (invoice is null || !User.CanSee(invoice)) return Results.NotFound();
 
-    var files = await media.For(invoice).ListAsync("pdf", ct);
+    var files = await media.For(invoice).ListByCategoryAsync("pdf", ct);
     if (files.Count == 0) return Results.NotFound();
 
     var content = await media.OpenReadAsync(files[0].Id, ct);

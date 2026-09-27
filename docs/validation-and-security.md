@@ -138,9 +138,10 @@ The route group is returned so this takes one line:
 app.MapMediaEndpoints().RequireAuthorization("media");
 ```
 
-Per-file authorization — "this user may read this file" — is yours: the library records
-`OwnerEntityName`, `OwnerEntityId` and `UploadedBy` so you can decide, but it does not decide for
-you. For anything beyond "signed in", write your own routes over `IMediaManager` and put your
+Per-file authorization — "this user may read this file" — is yours: the library records who uploaded
+a file and which entities are attached to it so you can decide, but it does not decide for you. Note
+that a file may be attached to several entities, so the question is about all of them rather than
+one. For anything beyond "signed in", write your own routes over `IMediaManager` and put your
 checks in them.
 
 ## Serving stored files safely
@@ -170,6 +171,7 @@ SHA-256 of the stored bytes, on by default and free — the bytes are already st
 detects corruption and backs optional deduplication.
 
 `DeduplicateByChecksum()` is **off** by default, and the reason is worth knowing before you turn it
-on: the returned row carries the *first* upload's name, category, owner and uploader, so two
-callers who "uploaded" a file share one row and one lifetime — deleting it deletes it for both.
-Right for interchangeable content-addressed assets; wrong for somebody's document.
+on: the returned row carries the *first* upload's name, category and uploader, so two callers who
+"uploaded" a file share one row and one lifetime — deleting it deletes it for both. Attaching is
+unaffected: an upload through `media.For(entity)` attaches the deduplicated file, so both entities
+have it. Right for interchangeable content-addressed assets; wrong for somebody's document.

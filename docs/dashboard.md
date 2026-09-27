@@ -17,8 +17,8 @@ for each. To run them separately, see
 
 | | |
 |---|---|
-| **Media** | The whole library. Search by file name, narrow by category, tag or kind, sort by date, name or size, page through it, upload, inspect, rename, retag, delete. |
-| **Products** | The sample's own entity. Each product has a button that opens the library in a modal to attach a file that already exists, or upload a new one straight onto it. |
+| **Media** | The whole library. Search by file name, narrow by category, tag or kind, sort by date, name or size, page through it, upload, inspect, rename, retag, delete. Opening one file shows **every entity using it**, each with its roles and its own detach button. |
+| **Products** | The sample's own entity. Each product's media is grouped by what it is for — the primary image, the gallery in its own order, anything else after — with make-primary, move, and remove-from-product on each. The button opens the library in a modal to attach a file that already exists, or upload a new one straight onto it. |
 | **Overview** | A few counts, and the way in. |
 
 ## One browser, used twice
@@ -29,7 +29,7 @@ products page shows in a modal.
 ```
 pages/media.vue      →  MediaBrowser
 pages/products.vue   →  MediaPickerModal  →  MediaBrowser   (browse tab, selectable)
-                                          →  MediaBrowser   (attached tab, filtered by owner)
+                                          →  MediaBrowser   (attached tab, filtered by owner and role)
 ```
 
 That is worth stating because "the same functionality in the popup" is the kind of requirement
@@ -39,6 +39,27 @@ neither can drift.
 
 Each instance owns its own listing state, so opening the picker cannot disturb what the page
 behind it was showing.
+
+## Detaching and deleting are different buttons
+
+The distinction the library rests on is visible in the UI, because getting it wrong destroys data:
+
+- **Remove from product** detaches. The file stays in the library and stays attached to every other
+  product using it.
+- **Delete**, on the Media page, removes the file and every link to it. The confirmation says how
+  many entities lose it and names them — *"It is attached to 2 entities, and all of them lose it:
+  Product 2, Product 1."*
+
+Attaching a file to a second product does not take it off the first, so there is nothing to warn
+about there. The links a file has are read one file at a time, because a listing does not carry
+them.
+
+## Roles in the picker
+
+The picker chooses what the next attach is **for**, with the cardinality in the verb: `gallery`
+appends, `primary` and `seo` replace whatever held the role. The "Attached" badge counts the
+selected role, so an image already in the gallery is still offered as a candidate for primary —
+which is a perfectly reasonable thing to want.
 
 ## Everything is filtered by the API
 

@@ -100,14 +100,26 @@ sharing a name.
 ### `MediaModelOptions` (EF Core)
 
 ```csharp
-modelBuilder.ApplyMedia(o => { o.MediaFilesTable = "Uploads"; o.Schema = "media"; });
+modelBuilder.ApplyMedia(o =>
+{
+    o.MediaFilesTable       = "Uploads";
+    o.MediaAttachmentsTable = "UploadLinks";
+    o.Schema                = "media";
+});
 ```
+
+| | Default | |
+|---|---|---|
+| `MediaFilesTable` | `MediaFiles` | |
+| `MediaAttachmentsTable` | `MediaAttachments` | The links between files and your entities. Two tables in total, whatever you attach media to. |
+| `Schema` | `null` | The model's default schema. |
 
 ### `DapperOptions`
 
 | | Default | |
 |---|---|---|
 | `MediaFilesTable` | `MediaFiles` | Matches the EF Core store, so one database serves both. |
+| `MediaAttachmentsTable` | `MediaAttachments` | Likewise. |
 | `Schema` | `null` | SQLite has none. |
 | `Dialect` | *(inferred)* | Set it when the connection is a wrapper. |
 
@@ -116,14 +128,20 @@ modelBuilder.ApplyMedia(o => { o.MediaFilesTable = "Uploads"; o.Schema = "media"
 | | Default | |
 |---|---|---|
 | `MediaFilesCollection` | `mediaFiles` | |
-| `CreateIndexes` | `true` | |
+| `MediaAttachmentsCollection` | `mediaAttachments` | A collection of its own rather than an array inside each file: MongoDB sorts an array field by its smallest element, not the one a filter matched, so "this product's gallery in order" would have ordered by the lowest position the file holds for *any* owner. |
+| `CreateIndexes` | `true` | Creates both collections' indexes at startup. `MongoMediaIndexes.EnsureCreatedAsync` does the same from a deployment step. |
 
 ## Deduplication
 
 Off by default, and worth understanding before turning on. When an upload's bytes are already
 stored, the existing row is returned instead of a second copy — so two callers who "uploaded" a
-file share **one row and one lifetime**, and the row carries the *first* upload's name, category,
-owner and uploader. Deleting it deletes it for both.
+file share **one row and one lifetime**, and the row carries the *first* upload's name, category and
+uploader. Deleting it deletes it for both.
+
+Attaching is unaffected, and this is where the attachment table earns its keep: an upload through
+`media.For(entity)` stores or deduplicates the bytes and then attaches, so identical bytes mean one
+file and a second link rather than a second copy. Both entities have it, and neither took it off the
+other.
 
 Right for interchangeable content-addressed assets. Wrong for somebody's document.
 

@@ -14,7 +14,7 @@ Start with the [README](../README.md) for the 5-minute path. These pages go furt
 | | |
 |---|---|
 | [Uploading and reading](uploading-and-reading.md) | `IMediaManager` in full |
-| [Attaching media to entities](attaching-to-entities.md) | `For(entity)`, entity names, keys, and cleanup |
+| [Attaching media to entities](attaching-to-entities.md) | `For(entity)`, roles and ordering, one file on many entities, and cleanup |
 | [Querying](querying.md) | Filtering, paging, categories and tags |
 | [Validation and security](validation-and-security.md) | Size limits, allow-lists, content sniffing, path safety, authorization |
 | [REST API](rest-api.md) | Every endpoint and its status codes |

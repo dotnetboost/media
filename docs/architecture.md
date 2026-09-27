@@ -49,16 +49,32 @@ Putting all of that in one row buys three things:
 - **Auditability.** A soft-deleted row still says the file existed, what it was, and who put it
   there, long after the bytes are gone.
 
+## Why the link is a row of its own
+
+A file and the use something makes of it are two different things. The file is the bytes and the
+facts about them, which is inherently singular. What an entity uses those bytes *for* is inherently
+plural: the same image can be one product's main photo and another's third gallery shot, so neither
+the role nor the position belongs on the file.
+
+So `MediaAttachments` holds `(MediaFileId, OwnerEntityName, OwnerEntityId, Role, SortOrder)`, unique
+on all but the position. One extra table in total — not one per entity type — so adding media to
+something new still costs no table, no column and no migration.
+
+Keeping them apart is also what makes deduplication coherent. Identical bytes resolve to one file
+and a second attachment; with a single owner slot on the file, a deduplicated upload had nowhere to
+put the second entity.
+
 ## Why there is no foreign key
 
-A media row points at your entity by **name and key** — `("Product", "42")` — and there is
+An attachment row points at your entity by **name and key** — `("Product", "42")` — and there is
 deliberately no foreign key back.
 
-That is what lets one table serve every entity in the application. Adding media to a new entity
+That is what lets two tables serve every entity in the application. Adding media to a new entity
 costs no table, no column and no migration; it costs an attribute at most.
 
 The price is explicit, and the library does not pretend otherwise: **deleting an entity does not
-cascade to its files.** Call `media.For(entity).DeleteAllAsync()` when it goes.
+cascade to its files.** Call `media.For(entity).DeleteAllAsync()` when it goes — it deletes the
+files that entity alone was using and merely detaches the ones others still reference.
 
 ## Why the bytes are written first
 

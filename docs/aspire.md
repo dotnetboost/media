@@ -35,8 +35,16 @@ curl -X POST -H "Content-Type: application/json" \
      -d '{"sku":"LAMP-1","name":"Desk lamp","price":39.00}' \
      http://localhost:5180/api/products
 
-curl -F "file=@lamp.png" http://localhost:5180/api/products/1/images
+curl -F "file=@lamp.png" "http://localhost:5180/api/products/1/images?role=primary"
+curl -F "file=@lamp-side.png" "http://localhost:5180/api/products/1/images?role=gallery"
 curl http://localhost:5180/api/products/1
+
+# The same image on a second product — nothing is copied, and product 1 keeps it
+curl -X POST -H "Content-Type: application/json" \
+     -d '{"sku":"LAMP-2","name":"Desk lamp, black","price":39.00}' \
+     http://localhost:5180/api/products
+
+curl -X POST "http://localhost:5180/api/products/2/images/{mediaId}?role=primary"
 ```
 
 The OpenAPI document is at `/openapi/v1.json`, with Scalar at `/scalar/v1`.
