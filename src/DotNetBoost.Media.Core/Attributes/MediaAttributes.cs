@@ -1,7 +1,7 @@
 namespace DotNetBoost.Media.Core.Attributes;
 
 /// <summary>
-/// Names the entity in <see cref="Models.MediaFile.OwnerEntityName"/>, instead of using the type
+/// Names the entity in <see cref="Models.MediaAttachment.OwnerEntityName"/>, instead of using the type
 /// name. Put it on an entity whose class you may rename, or on two unrelated types that would
 /// otherwise share a name:
 /// <code>

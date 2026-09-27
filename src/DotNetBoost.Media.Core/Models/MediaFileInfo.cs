@@ -33,12 +33,6 @@ public sealed record MediaFileInfo
     /// <summary>Lowercase hex SHA-256 of the bytes, when one was computed.</summary>
     public string? Checksum { get; init; }
 
-    /// <summary>The entity this file is attached to, or <c>null</c>.</summary>
-    public string? OwnerEntityName { get; init; }
-
-    /// <summary>That entity's key, or <c>null</c>.</summary>
-    public string? OwnerEntityId { get; init; }
-
     /// <summary>The bucket the application sorted it into, or <c>null</c>.</summary>
     public string? Category { get; init; }
 
@@ -79,8 +73,6 @@ public sealed record MediaFileInfo
             StorageContainer = file.StorageContainer,
             StoragePath      = file.StoragePath,
             Checksum         = file.Checksum,
-            OwnerEntityName  = file.OwnerEntityName,
-            OwnerEntityId    = file.OwnerEntityId,
             Category         = file.Category,
             Tags             = MediaTags.Split(file.Tags),
             Metadata         = MediaMetadata.Parse(file.Metadata),

@@ -106,4 +106,31 @@ internal sealed class FailingMediaStore : IMediaStore
 
     public Task<MediaFile?> FindByChecksumAsync(string checksum, long size, CancellationToken ct = default) =>
         Task.FromResult<MediaFile?>(null);
+
+    // The attachment half of the contract is inert: this double exists for the "bytes written, row
+    // lost" path, which fails at AddAsync before anything is ever attached.
+    public Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default) =>
+        throw new InvalidOperationException("The store was told to fail.");
+
+    public Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default) =>
+        Task.FromResult(false);
+
+    public Task<int> RemoveAttachmentsAsync(MediaOwner owner, string? role = null, CancellationToken ct = default) =>
+        Task.FromResult(0);
+
+    public Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default) =>
+        Task.FromResult(0);
+
+    public Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default) =>
+        Task.CompletedTask;
+
+    public Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<MediaAttachment>>([]);
+
+    public Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(MediaOwner owner, string? role = null, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<MediaAttachment>>([]);
+
+    public Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
 }

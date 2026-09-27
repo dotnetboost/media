@@ -27,7 +27,7 @@ public interface IMediaKeyGenerator
 
 /// <summary>
 /// Reads an entity's primary key as the canonical string stored in
-/// <see cref="MediaFile.OwnerEntityId"/>. The default implementation discovers keys by convention
+/// <see cref="MediaAttachment.OwnerEntityId"/>. The default implementation discovers keys by convention
 /// (<c>[Key]</c>, <c>Id</c>, <c>{TypeName}Id</c>); the EF Core provider replaces it with one that
 /// reads the model instead.
 /// <para>

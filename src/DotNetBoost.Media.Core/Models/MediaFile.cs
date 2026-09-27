@@ -12,6 +12,11 @@ namespace DotNetBoost.Media.Core.Models;
 /// uploaded it, what is it attached to" without ever touching the storage account.
 /// </para>
 /// <para>
+/// It records nothing about who uses it. A file is linked to the entities that use it by
+/// <see cref="MediaAttachment"/> rows — none, one, or many — so the same upload can serve several
+/// entities at once, in a different role and a different position for each.
+/// </para>
+/// <para>
 /// Not sealed, on purpose: it is an entity type in the application's own context, and EF Core's
 /// lazy-loading proxies refuse a model that contains a sealed entity type.
 /// </para>
@@ -72,19 +77,6 @@ public class MediaFile
     /// deduplication that returns the existing file instead of storing identical bytes twice.
     /// </summary>
     public string? Checksum { get; set; }
-
-    /// <summary>
-    /// Logical name of the entity type this file is attached to, e.g. <c>Product</c>, or
-    /// <c>null</c> for a file that stands alone. Set by <c>IMediaManager.For(entity)</c>.
-    /// </summary>
-    public string? OwnerEntityName { get; set; }
-
-    /// <summary>
-    /// The owning entity's primary key, stored as a string so the same table serves <c>int</c>,
-    /// <c>long</c>, <c>Guid</c> and <c>string</c> keys without a schema change. Formatted
-    /// invariantly by <see cref="Metadata.EntityKey.ToKeyString"/>.
-    /// </summary>
-    public string? OwnerEntityId { get; set; }
 
     /// <summary>
     /// A coarse bucket the application sorts uploads into — <c>avatars</c>, <c>invoices</c>,

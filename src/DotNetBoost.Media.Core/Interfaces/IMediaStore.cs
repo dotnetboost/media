@@ -8,8 +8,14 @@ namespace DotNetBoost.Media.Core.Interfaces;
 /// sniffing, checksums, deduplication and the ordering of "bytes first, row second" all live in
 /// the engine behind <see cref="IMediaManager"/>.
 /// <para>
-/// Nothing here deletes bytes. A store removes rows; the engine removes the bytes through the
-/// backend that wrote them, and does so first.
+/// Nothing here deletes bytes — including the attachment operations, which only ever remove links.
+/// A store removes rows; the engine removes the bytes through the backend that wrote them, and does
+/// so first.
+/// </para>
+/// <para>
+/// Two tables, then: the files and the attachments linking them to entities. Their consistency is
+/// the engine's business, not the store's — an attachment whose file is gone is a bug in
+/// <see cref="IMediaManager"/>, not something a store is asked to prevent.
 /// </para>
 /// </summary>
 public interface IMediaStore
@@ -55,4 +61,60 @@ public interface IMediaStore
     /// well as the hash so that a hash collision cannot serve one file's bytes as another's.
     /// </summary>
     Task<MediaFile?> FindByChecksumAsync(string checksum, long size, CancellationToken ct = default);
+
+    /// <summary>
+    /// Stores a new attachment row, linking a file to an entity.
+    /// </summary>
+    /// <exception cref="MediaConflictException">
+    /// That file is already attached to that entity in that role. The uniqueness of
+    /// (file, owner, role) is the store's to enforce — the engine checks first so that attaching
+    /// twice is a no-op rather than an error, and this is the backstop under a race.
+    /// </exception>
+    Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default);
+
+    /// <summary>Removes one attachment row by its id. Succeeds silently when it does not exist.</summary>
+    /// <returns><c>true</c> if a row was removed.</returns>
+    Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes every attachment belonging to <paramref name="owner"/>, or only those in
+    /// <paramref name="role"/>. Bytes and file rows are untouched.
+    /// </summary>
+    /// <returns>How many rows were removed.</returns>
+    Task<int> RemoveAttachmentsAsync(MediaOwner owner, string? role = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes every attachment of one file, whoever it belonged to. The cascade behind deleting a
+    /// file; nothing else should call it.
+    /// </summary>
+    /// <returns>How many rows were removed.</returns>
+    Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default);
+
+    /// <summary>Saves a changed attachment row, matched on its id. Backs reordering.</summary>
+    /// <exception cref="MediaNotFoundException">No attachment has that id.</exception>
+    Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default);
+
+    /// <summary>Every attachment of one file, whoever it belongs to, oldest first.</summary>
+    Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
+        Guid mediaFileId, CancellationToken ct = default);
+
+    /// <summary>
+    /// Every attachment belonging to <paramref name="owner"/> — or only those in
+    /// <paramref name="role"/> — ordered by role, then by <see cref="MediaAttachment.SortOrder"/>.
+    /// </summary>
+    Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Which of <paramref name="mediaFileIds"/> are still attached to some owner other than
+    /// <paramref name="excluding"/>.
+    /// <para>
+    /// This is the sole-holder test behind <c>IMediaAccessor.DeleteAllAsync</c>: the files it
+    /// returns are shared and must only be detached, and the rest are this entity's alone and go
+    /// with it. One statement on purpose — deleting an entity with fifty images must not fire fifty
+    /// separate probes.
+    /// </para>
+    /// </summary>
+    Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default);
 }

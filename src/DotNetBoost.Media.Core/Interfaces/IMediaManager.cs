@@ -90,12 +90,28 @@ public interface IMediaManager
     /// Soft delete keeps the row with <see cref="MediaFile.DeletedAt"/> set, as a record that the
     /// file existed — not as a way to get it back.
     /// <para>
+    /// <b>Every attachment of the file goes with it</b>, so the file disappears from every entity
+    /// that was using it. That is the point of deleting a file rather than detaching it: this is the
+    /// "remove it from the library" operation, and
+    /// <see cref="IMediaAccessor.DetachAsync(Guid, string?, CancellationToken)"/> is the one that
+    /// removes it from a single entity. Attachment rows are removed outright even under soft delete —
+    /// they are links with no independent value, and a tombstoned file that still read as attached
+    /// to a live entity would be worse than no record at all.
+    /// </para>
+    /// <para>
     /// The bytes go first. A backend that reports them already gone is treated as success, so a
     /// delete retried after a partial failure completes rather than sticking.
     /// </para>
     /// </summary>
     /// <returns><c>true</c> if a live file was deleted, <c>false</c> if there was none.</returns>
     Task<bool> DeleteAsync(Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Everything this file is attached to, ordered oldest link first — what a library UI needs to
+    /// say "used by 4 entities" before offering to delete it.
+    /// </summary>
+    /// <exception cref="MediaNotFoundException">No live file has that id.</exception>
+    Task<IReadOnlyList<MediaAttachmentInfo>> GetAttachmentsAsync(Guid id, CancellationToken ct = default);
 
     /// <summary>One page of the files matching <paramref name="query"/>, with the total behind it.</summary>
     Task<MediaPage> ListAsync(MediaQuery? query = null, CancellationToken ct = default);
@@ -124,6 +140,17 @@ public interface IMediaManager
 /// The media attached to one entity instance. Returned by <see cref="IMediaManager.For(object)"/>;
 /// every operation on it is already scoped to that entity, so none of them can reach another's
 /// files.
+/// <para>
+/// <b>Roles carry their own cardinality.</b> A product has one main image, many gallery images and
+/// one SEO image, and no schema can express all three at once — a uniqueness rule that fits
+/// <c>primary</c> would forbid a second gallery shot. So the caller says which it means:
+/// <see cref="SetAsync"/> replaces whatever holds the role, <see cref="AddAsync"/> appends to it.
+/// <code>
+/// await media.For(product).SetAsync(MediaRoles.Primary, heroId, ct);   // replaces the old hero
+/// await media.For(product).AddAsync(shotId, MediaRoles.Gallery, ct);   // appended at the end
+/// await media.For(product).ReorderAsync(MediaRoles.Gallery, ids, ct);
+/// </code>
+/// </para>
 /// </summary>
 public interface IMediaAccessor
 {
@@ -131,28 +158,125 @@ public interface IMediaAccessor
     MediaOwner Owner { get; }
 
     /// <summary>
-    /// Uploads a file already attached to this entity — <see cref="MediaUpload.Owner"/> is
-    /// overwritten with <see cref="Owner"/>, so it cannot be set to anything else by accident.
+    /// Uploads a file and attaches it to this entity in one step, under
+    /// <see cref="MediaUpload.Role"/> or <see cref="MediaRoles.Default"/>, appended within that
+    /// role.
+    /// <para>
+    /// With <c>MediaOptions.DeduplicateByChecksum</c> on, bytes already in the library are not
+    /// stored twice: the existing file is attached to this entity instead, which is exactly the
+    /// right answer and was impossible while a file could only record one owner.
+    /// </para>
     /// </summary>
     Task<MediaFileInfo> UploadAsync(MediaUpload upload, CancellationToken ct = default);
 
-    /// <summary>Every live file attached to this entity, newest first.</summary>
+    /// <summary>
+    /// Every live file attached to this entity, in the order the entity put them in: by role, then
+    /// by <see cref="MediaAttachment.SortOrder"/>. A file attached under two roles is returned
+    /// once, at its first one.
+    /// </summary>
     Task<IReadOnlyList<MediaFileInfo>> ListAsync(CancellationToken ct = default);
 
-    /// <summary>Its live files in <paramref name="category"/>, newest first.</summary>
-    Task<IReadOnlyList<MediaFileInfo>> ListAsync(string category, CancellationToken ct = default);
+    /// <summary>Its live files in one role, by <see cref="MediaAttachment.SortOrder"/>.</summary>
+    Task<IReadOnlyList<MediaFileInfo>> ListByRoleAsync(string role, CancellationToken ct = default);
 
     /// <summary>
-    /// Attaches an already-uploaded file to this entity — a file uploaded before the entity
-    /// existed, typically, as a draft form does.
+    /// Its live files in one storage category, newest first. Note that a category is a property of
+    /// the file — the bucket its bytes live in — while a role is a property of this link; see
+    /// <see cref="ListByRoleAsync"/>.
+    /// </summary>
+    Task<IReadOnlyList<MediaFileInfo>> ListByCategoryAsync(string category, CancellationToken ct = default);
+
+    /// <summary>
+    /// The one file in a single-valued role — the product's <c>primary</c> image — or <c>null</c>
+    /// when nothing holds it.
+    /// </summary>
+    /// <exception cref="InvalidMediaException">
+    /// Several files hold that role, so it is not single-valued. Read it with
+    /// <see cref="ListByRoleAsync"/> instead.
+    /// </exception>
+    Task<MediaFileInfo?> GetByRoleAsync(string role, CancellationToken ct = default);
+
+    /// <summary>
+    /// Attaches an already-uploaded file to this entity — a file uploaded before the entity existed,
+    /// as a draft form does, or one already in use elsewhere. Appended at the end of
+    /// <paramref name="role"/>.
+    /// <para>
+    /// Attaching a file that is already attached here in this role changes nothing and returns it,
+    /// so a double click and a retried request are both harmless.
+    /// </para>
     /// </summary>
     /// <exception cref="MediaNotFoundException">No live file has that id.</exception>
-    Task<MediaFileInfo> AttachAsync(Guid id, CancellationToken ct = default);
+    Task<MediaFileInfo> AddAsync(Guid id, string? role = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Deletes every file attached to this entity. Call it when the entity goes: nothing in the
-    /// database refers to a media row, so no cascade will do it for you.
+    /// Attaches a file as the single holder of <paramref name="role"/>, detaching whatever held it
+    /// before. For "make this the main image", which as two calls would leave a window with two
+    /// primaries or none.
+    /// <para>
+    /// The files it displaces are only detached, never deleted — they may well be in use elsewhere.
+    /// </para>
     /// </summary>
-    /// <returns>How many files were deleted.</returns>
+    /// <exception cref="MediaNotFoundException">No live file has that id.</exception>
+    Task<MediaFileInfo> SetAsync(string role, Guid id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Renumbers a role so its files sit in the order given — what a drag-and-drop gallery saves.
+    /// </summary>
+    /// <param name="role">The role to reorder.</param>
+    /// <param name="idsInOrder">
+    /// Every file currently attached in that role, in the order wanted. All of them, because a
+    /// partial list has no unambiguous meaning: the positions of the ones left out would be
+    /// anyone's guess.
+    /// </param>
+    /// <param name="ct">Cancels the operation.</param>
+    /// <exception cref="InvalidMediaException">
+    /// The ids are not exactly the files attached in that role — one is missing, unknown, or listed
+    /// twice.
+    /// </exception>
+    Task ReorderAsync(string role, IReadOnlyList<Guid> idsInOrder, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the link between this entity and a file. <b>The file and its bytes are untouched</b>
+    /// — it stays in the library, and stays attached to every other entity using it. This is what a
+    /// product's "remove this image" does; <see cref="IMediaManager.DeleteAsync"/> is what deleting
+    /// the file itself does.
+    /// </summary>
+    /// <param name="id">The file to unlink.</param>
+    /// <param name="role">
+    /// Only this role's link, or — left <c>null</c> — the file's links in every role on this entity.
+    /// </param>
+    /// <param name="ct">Cancels the operation.</param>
+    /// <returns><c>true</c> if a link was removed, <c>false</c> if there was none.</returns>
+    Task<bool> DetachAsync(Guid id, string? role = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes every link from this entity, deleting nothing. Leaves the files in the library,
+    /// unattached, ready to be attached again.
+    /// </summary>
+    /// <returns>How many links were removed.</returns>
+    Task<int> DetachAllAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// For when the entity itself goes: deletes the files <b>this entity was the only holder of</b>,
+    /// and merely detaches the ones other entities still reference. Call it when the entity is
+    /// deleted — nothing in the database refers to a media row, so no cascade will do it for you.
+    /// <para>
+    /// A shared file surviving is the point. Deleting one product must not pull an image out of
+    /// every other product using it.
+    /// </para>
+    /// <para>
+    /// There is a window between finding a file unshared and deleting its bytes in which another
+    /// request could attach it, leaving that new link pointing at bytes that are gone. Closing it
+    /// needs a lock this library does not take anywhere — the Dapper store borrows the application's
+    /// own connection and may already be inside its transaction. The window is small, the outcome is
+    /// reported honestly by <see cref="IMediaManager.OpenReadAsync"/> as
+    /// <see cref="MediaContentMissingException"/>, and the trade is the same one the engine already
+    /// makes writing bytes before rows.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// How many files were deleted. Files that were only detached because something else still uses
+    /// them are not counted — nothing was destroyed.
+    /// </returns>
     Task<int> DeleteAllAsync(CancellationToken ct = default);
 }
