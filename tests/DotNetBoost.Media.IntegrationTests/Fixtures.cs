@@ -154,6 +154,8 @@ public sealed class IntegrationContext(DbContextOptions<IntegrationContext> opti
 {
     public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
 
+    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

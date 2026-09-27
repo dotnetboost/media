@@ -462,56 +462,78 @@ public sealed class DapperMediaStore(
             ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Ids per statement. Under SQL Server's 2,100-parameter ceiling and SQLite's default 999, with
+    /// room to spare — an entity with more attachments than this is unusual, and it costs it one
+    /// extra round trip rather than a failed statement.
+    /// </summary>
+    private const int ShareProbeBatch = 500;
+
     /// <inheritdoc/>
     public async Task<IReadOnlySet<Guid>> FindSharedAsync(
         IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(mediaFileIds);
 
+        var shared = new HashSet<Guid>();
+
         if (mediaFileIds.Count == 0)
-            return new HashSet<Guid>();
+            return shared;
 
         var sql = Sql;
 
         string C(string column) => DapperStatements.Quote(sql.Dialect, column);
 
-        // One statement for the whole set — the alternative, asking per file, turns deleting a
-        // product with fifty images into fifty round trips. Dapper expands the list into an IN.
-        var statement =
-            $"SELECT DISTINCT {C("MediaFileId")} FROM {sql.AttachmentTable} " +
-            $"WHERE {C("MediaFileId")} IN @MediaFileIds " +
-            $"AND ({C("OwnerEntityName")} <> @OwnerEntityName OR {C("OwnerEntityId")} <> @OwnerEntityId)";
-
-        var parameters = new
+        // Batched, and one statement per batch rather than a probe per file: deleting a product with
+        // fifty images must not become fifty round trips.
+        foreach (var batch in mediaFileIds.Distinct().Chunk(ShareProbeBatch))
         {
-            // Passed as Guids, exactly as the insert passed them. Each provider converts a Guid
-            // parameter its own way — a uniqueidentifier, a uuid, or text on SQLite — and doing it
-            // the same way in both directions is what makes the comparison match. Formatting them
-            // here would only be guessing at a provider's own representation.
-            MediaFileIds    = mediaFileIds.ToArray(),
-            OwnerEntityName = excluding.EntityName,
-            OwnerEntityId   = excluding.EntityId
-        };
+            // The ids are bound one parameter at a time rather than left to Dapper's IN expansion.
+            // Dapper asks the provider whether it supports arrays, and for Npgsql the answer is yes:
+            // it then passes the whole list as a single array parameter, which PostgreSQL will take
+            // only as "= ANY(@ids)" and rejects as a syntax error after IN. Naming each id keeps one
+            // statement correct on all three engines instead of one spelling per dialect.
+            var parameters = new DynamicParameters();
+            parameters.Add("OwnerEntityName", excluding.EntityName);
+            parameters.Add("OwnerEntityId", excluding.EntityId);
 
-        // Read through the reader rather than Dapper's own mapping: the id comes back as a Guid on
-        // SQL Server and PostgreSQL and as text on SQLite, and Query<Guid> cannot make that
-        // conversion — the same reason MediaFileMapper reads every column by hand.
-        return await UnitOfWork.RunAsync(
-            _connection,
-            async () =>
+            var names = new string[batch.Length];
+
+            for (var i = 0; i < batch.Length; i++)
             {
-                await using var reader = await _connection.ExecuteReaderAsync(
-                    new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
-                    ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+                names[i] = "@id" + i.ToString(CultureInfo.InvariantCulture);
+                parameters.Add("id" + i.ToString(CultureInfo.InvariantCulture), batch[i]);
+            }
 
-                var shared = new HashSet<Guid>();
+            var statement =
+                $"SELECT DISTINCT {C("MediaFileId")} FROM {sql.AttachmentTable} " +
+                $"WHERE {C("MediaFileId")} IN ({string.Join(", ", names)}) " +
+                $"AND ({C("OwnerEntityName")} <> @OwnerEntityName OR {C("OwnerEntityId")} <> @OwnerEntityId)";
 
-                while (await reader.ReadAsync(ct).ConfigureAwait(false))
-                    shared.Add(MediaFileMapper.Guid(reader, 0));
+            // Read through the reader rather than Dapper's own mapping: the id comes back as a Guid
+            // on SQL Server and PostgreSQL and as text on SQLite, and Query<Guid> cannot make that
+            // conversion — the same reason MediaFileMapper reads every column by hand.
+            var found = await UnitOfWork.RunAsync(
+                _connection,
+                async () =>
+                {
+                    await using var reader = await _connection.ExecuteReaderAsync(
+                        new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                        ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
 
-                return (IReadOnlySet<Guid>)shared;
-            },
-            ct).ConfigureAwait(false);
+                    var ids = new List<Guid>();
+
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        ids.Add(MediaFileMapper.Guid(reader, 0));
+
+                    return ids;
+                },
+                ct).ConfigureAwait(false);
+
+            shared.UnionWith(found);
+        }
+
+        return shared;
     }
 
     private Task<IReadOnlyList<MediaAttachment>> QueryAttachmentsAsync(

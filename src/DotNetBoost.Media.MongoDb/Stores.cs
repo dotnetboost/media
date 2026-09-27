@@ -7,8 +7,9 @@ using System.Text.RegularExpressions;
 namespace DotNetBoost.Media.MongoDb;
 
 /// <summary>
-/// Keeps media rows as documents in one MongoDB collection. The file's own id is the document's
-/// <c>_id</c>, so a lookup by id is a primary-key read.
+/// Keeps media rows as documents in one MongoDB collection, and the attachments linking them to
+/// entities in another. Each document's own id is its <c>_id</c>, so a lookup by id is a
+/// primary-key read.
 /// <para>
 /// There is no ambient transaction to join — MongoDB's are session-scoped and the driver does not
 /// hand them out through DI — so an upload's document and an application's own write are separate
@@ -24,7 +25,13 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
         (database ?? throw new ArgumentNullException(nameof(database)))
         .GetCollection<MediaFile>((options ?? throw new ArgumentNullException(nameof(options))).MediaFilesCollection);
 
+    private readonly IMongoCollection<MediaAttachment> _attachments =
+        (database ?? throw new ArgumentNullException(nameof(database)))
+        .GetCollection<MediaAttachment>((options ?? throw new ArgumentNullException(nameof(options))).MediaAttachmentsCollection);
+
     private static readonly FilterDefinitionBuilder<MediaFile> Filter = Builders<MediaFile>.Filter;
+
+    private static readonly FilterDefinitionBuilder<MediaAttachment> Link = Builders<MediaAttachment>.Filter;
 
     /// <inheritdoc/>
     public async Task AddAsync(MediaFile file, CancellationToken ct = default)
@@ -82,15 +89,37 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var documents = await _collection
-            .Find(Build(query))
+        var filter = await BuildAsync(query, ct).ConfigureAwait(false);
+
+        // The entity's own order lives on the attachment, and MongoDB cannot sort one collection by
+        // a field in another. So the ordering keys come from the links that were just read, and the
+        // sort happens here — over the matched files only, which for one entity's media is the
+        // handful it attached, and never more than MediaQuery.MaxTake after the slice.
+        if (query.SortBy == MediaSortBy.SortOrder)
+        {
+            var keys      = await OrderingKeysAsync(query, ct).ConfigureAwait(false);
+            var unordered = await _collection.Find(filter).ToListAsync(ct).ConfigureAwait(false);
+
+            var ordered = query.Descending
+                ? unordered
+                    .OrderByDescending(f => Key(keys, f.Id).Role, StringComparer.Ordinal)
+                    .ThenByDescending(f => Key(keys, f.Id).SortOrder)
+                    .ThenByDescending(f => f.Id)
+                : unordered
+                    .OrderBy(f => Key(keys, f.Id).Role, StringComparer.Ordinal)
+                    .ThenBy(f => Key(keys, f.Id).SortOrder)
+                    .ThenBy(f => f.Id);
+
+            return [.. ordered.Skip(query.Skip).Take(query.Take)];
+        }
+
+        return await _collection
+            .Find(filter)
             .Sort(Sort(query))
             .Skip(query.Skip)
             .Limit(query.Take)
             .ToListAsync(ct)
             .ConfigureAwait(false);
-
-        return documents;
     }
 
     /// <inheritdoc/>
@@ -98,7 +127,8 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     {
         ArgumentNullException.ThrowIfNull(query);
 
-        var count = await _collection.CountDocumentsAsync(Build(query), options: null, ct).ConfigureAwait(false);
+        var filter = await BuildAsync(query, ct).ConfigureAwait(false);
+        var count  = await _collection.CountDocumentsAsync(filter, options: null, ct).ConfigureAwait(false);
 
         // A collection with more than int.MaxValue documents would overflow the contract's int.
         // Saturating is the least wrong answer for a number that only ever drives a page count.
@@ -141,19 +171,45 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     /// <summary>
     /// A <see cref="MediaQuery"/> as a filter. Shared by the page and the count so the two cannot
     /// drift — a total that does not match the documents it is a total of is worse than no total.
+    /// <para>
+    /// Asynchronous because an owner filter has to be resolved against the attachment collection
+    /// first: MongoDB has no join inside a <c>find</c>, so the links are read and their file ids
+    /// become an <c>_id $in</c>. Two round trips rather than one, over an index that covers the
+    /// first exactly. An <c>$lookup</c> aggregation would make it one, at the price of a pipeline
+    /// that cannot reuse the <c>find</c> path every other query here goes through.
+    /// </para>
     /// </summary>
-    private static FilterDefinition<MediaFile> Build(MediaQuery query)
+    private async Task<FilterDefinition<MediaFile>> BuildAsync(MediaQuery query, CancellationToken ct)
     {
         var filters = new List<FilterDefinition<MediaFile>>();
 
         if (!query.IncludeDeleted)
             filters.Add(Filter.Eq(f => f.DeletedAt, null));
 
-        if (query.OwnerEntityName is { } ownerName)
-            filters.Add(Filter.Eq(f => f.OwnerEntityName, ownerName));
+        // Only when an owner is asked for: without one the attachment collection is never touched,
+        // so a file linked to nine entities comes back once and an unattached file comes back at all.
+        if (query.OwnerEntityName is not null)
+        {
+            var attached = await _attachments
+                .Distinct<Guid>(new ExpressionFieldDefinition<MediaAttachment, Guid>(a => a.MediaFileId),
+                    OwnerFilter(query), options: null, ct)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
 
-        if (query.OwnerEntityId is { } ownerId)
-            filters.Add(Filter.Eq(f => f.OwnerEntityId, ownerId));
+            filters.Add(Filter.In(f => f.Id, attached));
+        }
+
+        if (query.Unattached)
+        {
+            // Every id any entity holds, which is a covered distinct on the one indexed field.
+            var attached = await _attachments
+                .Distinct<Guid>(new ExpressionFieldDefinition<MediaAttachment, Guid>(a => a.MediaFileId),
+                    Link.Empty, options: null, ct)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            filters.Add(Filter.Nin(f => f.Id, attached));
+        }
 
         if (query.Category is { } category)
             filters.Add(Filter.Eq(f => f.Category, category));
@@ -196,4 +252,181 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
 
         return filters.Count == 0 ? Filter.Empty : Filter.And(filters);
     }
+
+    /// <summary>The links a query's owner filter matches.</summary>
+    private static FilterDefinition<MediaAttachment> OwnerFilter(MediaQuery query)
+    {
+        var filters = new List<FilterDefinition<MediaAttachment>>
+        {
+            Link.Eq(a => a.OwnerEntityName, query.OwnerEntityName)
+        };
+
+        if (query.OwnerEntityId is { } ownerId)
+            filters.Add(Link.Eq(a => a.OwnerEntityId, ownerId));
+
+        if (query.Role is { } role)
+            filters.Add(Link.Eq(a => a.Role, role));
+
+        return Link.And(filters);
+    }
+
+    /// <summary>
+    /// Each matched file's place in the owner's order: its lowest role, then its lowest position —
+    /// the same definition the relational stores express as two correlated subqueries, so an
+    /// application reads the same order whichever backend it is on.
+    /// </summary>
+    private async Task<Dictionary<Guid, (string Role, int SortOrder)>> OrderingKeysAsync(
+        MediaQuery query, CancellationToken ct)
+    {
+        var links = await _attachments
+            .Find(OwnerFilter(query))
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return links
+            .GroupBy(a => a.MediaFileId)
+            .ToDictionary(
+                g => g.Key,
+                g => (Role: g.Select(a => a.Role).Min(StringComparer.Ordinal)!, SortOrder: g.Min(a => a.SortOrder)));
+    }
+
+    private static (string Role, int SortOrder) Key(
+        Dictionary<Guid, (string Role, int SortOrder)> keys, Guid id) =>
+        keys.TryGetValue(id, out var key) ? key : (string.Empty, 0);
+
+    /// <inheritdoc/>
+    public async Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        try
+        {
+            await _attachments.InsertOneAsync(attachment, options: null, ct).ConfigureAwait(false);
+        }
+        catch (MongoWriteException ex) when (ex.WriteError?.Category == ServerErrorCategory.DuplicateKey)
+        {
+            // Either the unique index on (file, owner, role) or the _id — both mean this link is
+            // already recorded, which is what the engine's pre-check normally catches and this
+            // backstops under a race.
+            throw new MediaConflictException(
+                $"Media file '{attachment.MediaFileId}' is already attached to {attachment.OwnerEntityName} " +
+                $"{attachment.OwnerEntityId} as '{attachment.Role}'.",
+                ex);
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default)
+    {
+        var result = await _attachments
+            .DeleteOneAsync(Link.Eq(a => a.Id, attachmentId), ct)
+            .ConfigureAwait(false);
+
+        return result.DeletedCount > 0;
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var filters = new List<FilterDefinition<MediaAttachment>>
+        {
+            Link.Eq(a => a.OwnerEntityName, owner.EntityName),
+            Link.Eq(a => a.OwnerEntityId, owner.EntityId)
+        };
+
+        if (role is not null)
+            filters.Add(Link.Eq(a => a.Role, role));
+
+        var result = await _attachments.DeleteManyAsync(Link.And(filters), ct).ConfigureAwait(false);
+        return Saturate(result.DeletedCount);
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default)
+    {
+        var result = await _attachments
+            .DeleteManyAsync(Link.Eq(a => a.MediaFileId, mediaFileId), ct)
+            .ConfigureAwait(false);
+
+        return Saturate(result.DeletedCount);
+    }
+
+    /// <inheritdoc/>
+    public async Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        // Replaced whole, as the file document is, and never upserted: updating a link that is not
+        // there is an error, not a silent insert of one something else has already removed.
+        var result = await _attachments
+            .ReplaceOneAsync(
+                Link.Eq(a => a.Id, attachment.Id), attachment, new ReplaceOptions { IsUpsert = false }, ct)
+            .ConfigureAwait(false);
+
+        if (result.MatchedCount == 0)
+            throw new MediaNotFoundException(attachment.Id);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
+        Guid mediaFileId, CancellationToken ct = default) =>
+        await _attachments
+            .Find(Link.Eq(a => a.MediaFileId, mediaFileId))
+            .SortBy(a => a.CreatedAt).ThenBy(a => a.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var filters = new List<FilterDefinition<MediaAttachment>>
+        {
+            Link.Eq(a => a.OwnerEntityName, owner.EntityName),
+            Link.Eq(a => a.OwnerEntityId, owner.EntityId)
+        };
+
+        if (role is not null)
+            filters.Add(Link.Eq(a => a.Role, role));
+
+        return await _attachments
+            .Find(Link.And(filters))
+            .SortBy(a => a.Role).ThenBy(a => a.SortOrder).ThenBy(a => a.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaFileIds);
+
+        if (mediaFileIds.Count == 0)
+            return new HashSet<Guid>();
+
+        // One distinct for the whole set, rather than a probe per file: deleting a product with
+        // fifty images must not become fifty round trips.
+        var shared = await _attachments
+            .Distinct<Guid>(
+                new ExpressionFieldDefinition<MediaAttachment, Guid>(a => a.MediaFileId),
+                Link.And(
+                    Link.In(a => a.MediaFileId, mediaFileIds),
+                    Link.Or(
+                        Link.Ne(a => a.OwnerEntityName, excluding.EntityName),
+                        Link.Ne(a => a.OwnerEntityId, excluding.EntityId))),
+                options: null,
+                ct)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return shared.ToHashSet();
+    }
+
+    /// <summary>
+    /// A delete count as the contract's <c>int</c>. Saturating is the least wrong answer for a
+    /// number this large, and it only ever tells a caller how much went.
+    /// </summary>
+    private static int Saturate(long count) => count > int.MaxValue ? int.MaxValue : (int)count;
 }

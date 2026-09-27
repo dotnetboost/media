@@ -7,10 +7,85 @@ using MongoDB.Driver;
 namespace DotNetBoost.Media.MongoDb;
 
 /// <summary>
-/// Creates the collection's indexes as the host starts. They mirror the relational stores' —
-/// owner, checksum, category — so the same queries are served the same way whichever backend the
-/// application chose.
+/// Creates the indexes both collections need, for a deployment step or a test that builds the store
+/// directly rather than through <c>UseMongoDb(...)</c> — the counterpart of
+/// <c>DapperSchema.EnsureCreatedAsync</c> and EF Core's <c>ApplyMedia</c>.
+/// <para>
+/// They mirror the relational stores' — checksum and category on the files, uniqueness and owner
+/// order on the attachments — so the same queries are served the same way whichever backend the
+/// application chose. Creating an index that is already there is a no-op, so this is idempotent.
+/// </para>
+/// <para>
+/// The unique index is not decoration. It is what the store's contract rests on when two requests
+/// attach the same file to the same entity in the same role at once: the engine checks first, and
+/// this is what refuses the loser.
+/// </para>
 /// </summary>
+public static class MongoMediaIndexes
+{
+    /// <summary>Creates every index this store needs, if it is absent. Idempotent.</summary>
+    /// <param name="database">The database holding the collections.</param>
+    /// <param name="options">Collection naming. Defaults to <see cref="MongoDbOptions"/>'s own defaults.</param>
+    /// <param name="ct">Cancels the operation.</param>
+    public static async Task EnsureCreatedAsync(
+        IMongoDatabase database,
+        MongoDbOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        options ??= new MongoDbOptions();
+
+        var files       = database.GetCollection<MediaFile>(options.MediaFilesCollection);
+        var attachments = database.GetCollection<MediaAttachment>(options.MediaAttachmentsCollection);
+
+        var keys  = Builders<MediaFile>.IndexKeys;
+        var links = Builders<MediaAttachment>.IndexKeys;
+
+        await files.Indexes.CreateManyAsync(
+            [
+                // Deduplication and integrity checks. Sparse: a store with checksums off writes
+                // none of these fields at all.
+                new CreateIndexModel<MediaFile>(
+                    keys.Ascending(f => f.Checksum),
+                    new CreateIndexOptions { Name = "checksum", Sparse = true }),
+
+                // The default listing, and every category browse.
+                new CreateIndexModel<MediaFile>(
+                    keys.Ascending(f => f.Category).Descending(f => f.CreatedAt),
+                    new CreateIndexOptions { Name = "category_created" })
+            ],
+            ct).ConfigureAwait(false);
+
+        await attachments.Indexes.CreateManyAsync(
+            [
+                // One file may hold several roles on one entity — its primary and its seo image —
+                // but not the same role twice. Unique on all four fields, which is also what makes
+                // attaching idempotent: the engine checks first and this refuses a race.
+                new CreateIndexModel<MediaAttachment>(
+                    links.Ascending(a => a.MediaFileId).Ascending(a => a.OwnerEntityName)
+                         .Ascending(a => a.OwnerEntityId).Ascending(a => a.Role),
+                    new CreateIndexOptions { Name = "attachment_unique", Unique = true }),
+
+                // "This entity's files, in the order it put them in" — what For(entity) runs.
+                // Leading with the owner and ending on the position lets one index serve the
+                // filter, the role narrowing and the sort.
+                new CreateIndexModel<MediaAttachment>(
+                    links.Ascending(a => a.OwnerEntityName).Ascending(a => a.OwnerEntityId)
+                         .Ascending(a => a.Role).Ascending(a => a.SortOrder),
+                    new CreateIndexOptions { Name = "attachment_owner" }),
+
+                // The cascade when a file is deleted, the sole-holder test behind DeleteAllAsync,
+                // and the distinct that resolves an owner filter into file ids.
+                new CreateIndexModel<MediaAttachment>(
+                    links.Ascending(a => a.MediaFileId),
+                    new CreateIndexOptions { Name = "attachment_file" })
+            ],
+            ct).ConfigureAwait(false);
+    }
+}
+
+/// <summary>Creates those indexes as the host starts.</summary>
 internal sealed partial class MongoIndexHostedService(
     IServiceProvider services,
     MongoDbOptions options,
@@ -20,33 +95,10 @@ internal sealed partial class MongoIndexHostedService(
     {
         using var scope = services.CreateScope();
         var database    = scope.ServiceProvider.GetRequiredService<IMongoDatabase>();
-        var collection  = database.GetCollection<MediaFile>(options.MediaFilesCollection);
-
-        var keys = Builders<MediaFile>.IndexKeys;
 
         try
         {
-            await collection.Indexes.CreateManyAsync(
-                [
-                    // "This entity's files, newest first" — the query the library issues most.
-                    // Leading with the owner fields lets one index serve the filter and the sort.
-                    new CreateIndexModel<MediaFile>(
-                        keys.Ascending(f => f.OwnerEntityName).Ascending(f => f.OwnerEntityId).Descending(f => f.CreatedAt),
-                        new CreateIndexOptions { Name = "owner_created", Sparse = true }),
-
-                    // Deduplication and integrity checks. Sparse: a store with checksums off
-                    // writes none of these fields at all.
-                    new CreateIndexModel<MediaFile>(
-                        keys.Ascending(f => f.Checksum),
-                        new CreateIndexOptions { Name = "checksum", Sparse = true }),
-
-                    // The default listing, and every category browse.
-                    new CreateIndexModel<MediaFile>(
-                        keys.Ascending(f => f.Category).Descending(f => f.CreatedAt),
-                        new CreateIndexOptions { Name = "category_created" })
-                ],
-                cancellationToken).ConfigureAwait(false);
-
+            await MongoMediaIndexes.EnsureCreatedAsync(database, options, cancellationToken).ConfigureAwait(false);
             LogCreated(logger, options.MediaFilesCollection);
         }
         catch (MongoException ex)

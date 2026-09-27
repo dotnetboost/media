@@ -6,8 +6,9 @@ using MongoDB.Bson.Serialization.Serializers;
 namespace DotNetBoost.Media.MongoDb;
 
 /// <summary>
-/// The class map for <see cref="MediaFile"/>. Registered once, the first time the store is
-/// configured — the driver's map registry is global and re-registering a type throws.
+/// The class maps for <see cref="MediaFile"/> and <see cref="MediaAttachment"/>. Registered once,
+/// the first time the store is configured — the driver's map registry is global and re-registering
+/// a type throws.
 /// </summary>
 internal static class MediaFileClassMap
 {
@@ -47,6 +48,26 @@ internal static class MediaFileClassMap
                     // for the ones that are usually absent.
                     foreach (var member in map.DeclaredMemberMaps)
                         member.SetIgnoreIfNull(true);
+                });
+            }
+
+            if (!BsonClassMap.IsClassMapRegistered(typeof(MediaAttachment)))
+            {
+                BsonClassMap.RegisterClassMap<MediaAttachment>(map =>
+                {
+                    map.AutoMap();
+
+                    // The link's own id is the document's _id, so removing one attachment is a
+                    // primary-key delete.
+                    map.MapIdMember(a => a.Id).SetSerializer(new GuidSerializer(GuidRepresentation.Standard));
+
+                    // The file it points at is a Guid too, and the driver needs telling: without a
+                    // serializer it would be written in the legacy binary subtype, which would not
+                    // compare equal to the _id of the file document it names.
+                    map.MapMember(a => a.MediaFileId).SetSerializer(new GuidSerializer(GuidRepresentation.Standard));
+
+                    // Every field here is required and always written, so there is nothing to
+                    // IgnoreIfNull — unlike the file document, whose optional fields are left out.
                 });
             }
 
