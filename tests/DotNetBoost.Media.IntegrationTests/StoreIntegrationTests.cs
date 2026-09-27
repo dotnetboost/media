@@ -1,3 +1,4 @@
+using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.Dapper;
@@ -67,6 +68,47 @@ public sealed class PostgreSqlDapperTests(PostgreSqlFixture fixture) : StoreInte
         }
 
         return new DapperMediaStore(_connection, options);
+    }
+
+    /// <summary>
+    /// A write that fails for any reason other than a duplicate id is reported as itself, not as a
+    /// conflict. PostgreSQL is the engine the store reads SQLSTATE for, so this is where a wrong
+    /// reading would show.
+    /// </summary>
+    [Fact]
+    public async Task Add_reports_a_failure_that_is_not_a_duplicate_as_itself()
+    {
+        await using (var drop = _connection!.CreateCommand())
+        {
+            drop.CommandText = """DROP TABLE "MediaFilesDapper";""";
+            await drop.ExecuteNonQueryAsync();
+        }
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => Store.AddAsync(Row()));
+        Assert.Equal("42P01", ex.SqlState);
+    }
+
+    /// <summary>
+    /// A duplicate id is still a conflict inside the application's own transaction. This is why the
+    /// store reads SQLSTATE on PostgreSQL rather than looking the row up: the failed insert leaves
+    /// the transaction aborted, so a follow-up query inside it would fail too and the conflict
+    /// would come back as whatever that failure was.
+    /// </summary>
+    [Fact]
+    public async Task Add_refuses_a_duplicate_id_inside_an_ambient_transaction()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var clash = Row();
+        clash.Id = row.Id;
+
+        await using var transaction = await _connection!.BeginTransactionAsync();
+        var store = ((DapperMediaStore)Store).WithTransaction(transaction);
+
+        await Assert.ThrowsAsync<MediaConflictException>(() => store.AddAsync(clash));
+
+        await transaction.RollbackAsync();
     }
 
     protected override async Task CleanupAsync()

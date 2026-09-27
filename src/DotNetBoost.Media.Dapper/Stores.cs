@@ -28,7 +28,9 @@ public sealed class DapperMediaStore(
     private readonly IDbConnection _connection = connection ?? throw new ArgumentNullException(nameof(connection));
     private readonly DapperOptions _options    = options ?? throw new ArgumentNullException(nameof(options));
 
-    private DapperStatements Sql => DapperStatements.For(_options.Dialect ?? DapperStatements.DialectOf(_connection), _options);
+    private SqlDialect Dialect => _options.Dialect ?? DapperStatements.DialectOf(_connection);
+
+    private DapperStatements Sql => DapperStatements.For(Dialect, _options);
 
     /// <summary>
     /// Runs this store's statements inside <paramref name="ambient"/>, so an application's own
@@ -57,9 +59,48 @@ public sealed class DapperMediaStore(
         }
         catch (DbException ex)
         {
+            if (!await IsDuplicateAsync(ex, file.Id, ct).ConfigureAwait(false))
+                throw;
+
             throw new MediaConflictException(
-                $"Could not record media file '{file.Id}'. Another row with that id may already exist.",
+                $"Could not record media file '{file.Id}'. Another row with that id already exists.",
                 ex);
+        }
+    }
+
+    /// <summary>SQLSTATE <c>23505</c>, <c>unique_violation</c>.</summary>
+    private const string PostgresUniqueViolation = "23505";
+
+    /// <summary>
+    /// Whether <paramref name="ex"/> is this engine's way of saying a row with this id is already
+    /// there, rather than a missing table, a dropped connection or a value the column will not
+    /// take. Everything that is not a duplicate is reported as itself: calling it a conflict sends
+    /// the caller after a row that is not the problem, and makes the API answer 409 to something
+    /// no retry will ever fix.
+    /// <para>
+    /// PostgreSQL states it in SQLSTATE, which <see cref="DbException.SqlState"/> carries, and it
+    /// has to be read there rather than asked about: a failed statement leaves a PostgreSQL
+    /// transaction aborted, so inside an application's ambient transaction the follow-up query
+    /// below would fail too. SQL Server and SQLite put their codes on provider types this package
+    /// deliberately does not reference — <see cref="DapperStatements.DialectOf"/> explains why —
+    /// but a constraint violation leaves a transaction of theirs usable, so on those the row can
+    /// simply be looked for.
+    /// </para>
+    /// </summary>
+    private async Task<bool> IsDuplicateAsync(DbException ex, Guid id, CancellationToken ct)
+    {
+        if (Dialect == SqlDialect.PostgreSql)
+            return string.Equals(ex.SqlState, PostgresUniqueViolation, StringComparison.Ordinal);
+
+        try
+        {
+            // SelectById, not FindAsync: a soft-deleted row still holds the id.
+            return await QuerySingleAsync(Sql.SelectById, new { Id = id }, ct).ConfigureAwait(false) is not null;
+        }
+        catch (DbException)
+        {
+            // The probe could not run either, so nothing here says the insert hit a duplicate.
+            return false;
         }
     }
 

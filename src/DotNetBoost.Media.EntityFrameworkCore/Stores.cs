@@ -1,3 +1,4 @@
+using System.Data.Common;
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Metadata;
@@ -51,9 +52,37 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             // a reason it has nothing to do with.
             _context.Entry(file).State = EntityState.Detached;
 
+            // Only a duplicate id is a conflict. A missing table, a dropped connection, a column
+            // the model and the schema disagree about — those are reported as themselves, because
+            // calling them a conflict sends the caller after a row that is not the problem, and
+            // makes the API answer 409 to something no retry will ever fix.
+            if (!await RowExistsAsync(file.Id, ct).ConfigureAwait(false))
+                throw;
+
             throw new MediaConflictException(
-                $"Could not record media file '{file.Id}'. Another row with that id may already exist.",
+                $"Could not record media file '{file.Id}'. Another row with that id already exists.",
                 ex);
+        }
+    }
+
+    /// <summary>
+    /// Whether a row with this id is already there, asked after an insert has failed. It is a
+    /// query rather than a look at the provider's error code because this assembly deliberately
+    /// references no provider, and EF Core surfaces a unique violation only as the provider's own
+    /// code. A probe that cannot run answers false, leaving the original write error to stand.
+    /// </summary>
+    private async Task<bool> RowExistsAsync(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            return await _context.Set<MediaFile>()
+                .AsNoTracking()
+                .AnyAsync(f => f.Id == id, ct)
+                .ConfigureAwait(false);
+        }
+        catch (DbException)
+        {
+            return false;
         }
     }
 

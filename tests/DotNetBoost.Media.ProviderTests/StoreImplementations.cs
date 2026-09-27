@@ -36,6 +36,23 @@ public sealed class EfCoreStoreContractTests : StoreContractTests
         return new EfCoreMediaStore(_context);
     }
 
+    /// <summary>
+    /// A write that fails for any reason other than a duplicate id is reported as itself. The
+    /// store used to call every <c>DbUpdateException</c> a conflict, which sent the caller after a
+    /// row that was not the problem and made the API answer 409 to something no retry could fix.
+    /// </summary>
+    [Fact]
+    public async Task Add_reports_a_failure_that_is_not_a_duplicate_as_itself()
+    {
+        await using (var drop = _connection!.CreateCommand())
+        {
+            drop.CommandText = """DROP TABLE "MediaFiles";""";
+            await drop.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => Store.AddAsync(Row()));
+    }
+
     protected override async Task CleanupAsync()
     {
         if (_context is not null)
@@ -60,6 +77,19 @@ public sealed class DapperStoreContractTests : StoreContractTests
         await DapperSchema.EnsureCreatedAsync(_connection, options);
 
         return new DapperMediaStore(_connection, options);
+    }
+
+    /// <inheritdoc cref="EfCoreStoreContractTests.Add_reports_a_failure_that_is_not_a_duplicate_as_itself"/>
+    [Fact]
+    public async Task Add_reports_a_failure_that_is_not_a_duplicate_as_itself()
+    {
+        await using (var drop = _connection!.CreateCommand())
+        {
+            drop.CommandText = """DROP TABLE "MediaFiles";""";
+            await drop.ExecuteNonQueryAsync();
+        }
+
+        await Assert.ThrowsAsync<SqliteException>(() => Store.AddAsync(Row()));
     }
 
     protected override async Task CleanupAsync()

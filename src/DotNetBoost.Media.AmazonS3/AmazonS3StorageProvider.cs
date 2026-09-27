@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
@@ -171,7 +172,13 @@ public sealed class AmazonS3StorageProvider : IMediaStorageProvider, IMediaStora
             BucketName = container,
             Key        = key,
             Verb       = HttpVerb.GET,
-            Expires    = DateTime.UtcNow.Add(options.ExpiresIn ?? TimeSpan.FromHours(1))
+            Expires    = DateTime.UtcNow.Add(options.ExpiresIn ?? TimeSpan.FromHours(1)),
+            // The SDK pre-signs over HTTPS whatever the client is configured with, including its
+            // own UseHttp. Against a ServiceURL served over plain HTTP — an on-prem gateway, an
+            // S3-compatible server, a local proxy — that mints a link on a scheme the endpoint
+            // never answers, so follow the endpoint the client was actually given. Real AWS is
+            // reached without a ServiceURL and still gets HTTPS.
+            Protocol   = ServesHttp(_s3.Config) ? Protocol.HTTP : Protocol.HTTPS
         };
 
         if (options.AsAttachment)
@@ -236,6 +243,16 @@ public sealed class AmazonS3StorageProvider : IMediaStorageProvider, IMediaStora
     private static bool IsMissing(AmazonS3Exception ex) =>
         ex.StatusCode == HttpStatusCode.NotFound
         || string.Equals(ex.ErrorCode, "NoSuchKey", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Whether the endpoint this client talks to is plain HTTP, which decides the scheme a
+    /// pre-signed URL has to carry. A custom <c>ServiceURL</c> answers for itself; without one the
+    /// client is pointed at AWS, where <c>UseHttp</c> is the only way to ask for HTTP.
+    /// </summary>
+    private static bool ServesHttp(IClientConfig config) =>
+        config.ServiceURL is { Length: > 0 } serviceUrl
+            ? serviceUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            : config.UseHttp;
 
     private Uri Rewrite(Uri uri)
     {

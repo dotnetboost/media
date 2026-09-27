@@ -23,6 +23,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Products** page whose attach button opens that same browser in a modal. The Aspire AppHost
   starts it alongside the API.
 
+### Fixed
+
+- `AmazonS3StorageProvider.GetUrlAsync` pre-signs on the scheme its client's `ServiceURL` uses.
+  The AWS SDK pre-signs over HTTPS regardless of how the client is configured, so a provider
+  pointed at an S3-compatible endpoint served over plain HTTP — an on-prem gateway, a local proxy,
+  MinIO or LocalStack without TLS — handed out `https://` links that endpoint never answers on.
+  A client with no `ServiceURL` is talking to AWS and still gets HTTPS.
+- `EfCoreMediaStore.AddAsync` and `DapperMediaStore.AddAsync` report a failed insert as
+  `MediaConflictException` only when the id really is taken. They previously mapped every
+  `DbUpdateException` and `DbException` to a conflict, so a missing table or a dropped connection
+  surfaced as a duplicate id — and as a 409 through the API, which no retry could resolve. On
+  PostgreSQL the Dapper store reads SQLSTATE `23505`, because a failed statement leaves a
+  transaction aborted and a follow-up query inside the application's own transaction would fail
+  too; on SQL Server and SQLite, whose transactions survive a constraint violation, it looks the
+  row up rather than reference those providers' packages for an error code.
+
 ### Changed
 
 - `MediaQuery.OldestFirst` is replaced by `SortBy` + `Descending`. `new MediaQuery { OldestFirst = true }`
