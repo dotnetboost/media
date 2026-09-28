@@ -1,5 +1,6 @@
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.TestSupport;
@@ -39,15 +40,21 @@ internal sealed class Harness
             new MediaStorageProviderRegistry(backends, defaultProvider: null),
             new DateHierarchyKeyGenerator(clock),
             new ConventionEntityKeyAccessor(),
+            MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
             NullLogger<MediaManager>.Instance);
     }
 
     /// <param name="configure">Changes to the options before the engine is built.</param>
+    /// <param name="roles">
+    /// What each entity declares its roles to be. Left null, nothing is declared and nothing is
+    /// checked — which is what every test that is not about roles wants.
+    /// </param>
     /// <param name="extraBackends">Further backends to register, for the multi-backend cases.</param>
     public static Harness Create(
         Action<MediaOptions>? configure = null,
+        IMediaRoleRegistry? roles = null,
         params InMemoryStorageProvider[] extraBackends)
     {
         var options = new MediaOptions();
@@ -64,6 +71,7 @@ internal sealed class Harness
             registry,
             new DateHierarchyKeyGenerator(clock),
             new ConventionEntityKeyAccessor(),
+            roles ?? MediaRoleRegistry.Empty,
             options,
             clock,
             NullLogger<MediaManager>.Instance);

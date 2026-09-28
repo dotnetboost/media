@@ -1,5 +1,6 @@
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.Core.Services;
 using DotNetBoost.Media.EntityFrameworkCore;
@@ -42,6 +43,7 @@ public sealed class EfCoreTests : IAsyncLifetime
             new MediaStorageProviderRegistry([_storage], defaultProvider: null),
             new DateHierarchyKeyGenerator(clock),
             new EfCoreEntityKeyAccessor(_context),
+            MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
             NullLogger<MediaManager>.Instance);
@@ -193,6 +195,7 @@ public sealed class FileSystemEngineTests : IDisposable
             new MediaStorageProviderRegistry([storage], defaultProvider: null),
             new DateHierarchyKeyGenerator(clock),
             new ConventionEntityKeyAccessor(),
+            MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
             NullLogger<MediaManager>.Instance);

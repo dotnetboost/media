@@ -29,6 +29,7 @@ app.MapMediaEndpoints();            // default prefix: /api/media
 | `POST` | `/api/media/{id}/attachments` | Attach the file to an entity |
 | `DELETE` | `/api/media/{id}/attachments/{attachmentId}` | Remove one link, leaving the file alone |
 | `PUT` | `/api/media/attachments/order` | Reorder one entity's files within a role |
+| `GET` | `/api/media/roles/{entityName}` | The roles that entity declares, if it declares any |
 
 Note what the two deletes mean. `DELETE /api/media/{id}` removes the file from the library and
 therefore from every entity using it; `DELETE /api/media/{id}/attachments/{attachmentId}` removes
@@ -218,6 +219,31 @@ links at all.
 `204`. Send **every** file attached to that entity in that role, in the order wanted: a partial list
 has no unambiguous meaning, since the files left out would have no defined position. Anything else
 is a `400`.
+
+## GET /api/media/roles/{entityName}
+
+```json
+[
+  { "name": "primary", "multiple": false },
+  { "name": "gallery", "multiple": true  },
+  { "name": "seo",     "multiple": false }
+]
+```
+
+What the entity declared through `[MediaRole]` or `DeclareRoles`, for a client that has to offer the
+right roles rather than hard-code one entity's vocabulary. `multiple: false` means a client attaching
+there should send `"replace": true`.
+
+An entity that declares nothing returns `[]`, not a `404` — it is a real entity that accepts any
+role, so offer a free-text box rather than concluding it does not exist.
+
+When roles are declared, attaching is checked against them and a bad one is a `400`:
+
+```
+Product has no media role 'galery'. It declares: primary, gallery (many), seo.
+'primary' is single-valued on Product, and a file already holds it. Replace it rather than
+appending — SetAsync in code, or "replace": true through the REST API.
+```
 
 ## No "delete everything this entity has"
 

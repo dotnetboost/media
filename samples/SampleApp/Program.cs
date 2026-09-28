@@ -44,6 +44,9 @@ builder.Services.AddMedia(options =>
     // ALTERNATIVE: Amazon S3, or any S3-compatible store.
     // .UseAmazonS3("my-app-media")
     .AllowContentTypes("image/*", "application/pdf")
+    // Reads the [MediaRole] attributes on Product and enforces them. Entities that declare nothing
+    // are not checked, so this line only ever tightens what was already declared.
+    .DeclareRolesFrom(typeof(Product).Assembly)
     .Build();
 
 builder.Services.AddProblemDetails();

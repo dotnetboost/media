@@ -148,6 +148,16 @@ public interface IMediaManager
     /// object — a key read from a route parameter, say.
     /// </summary>
     IMediaAccessor For(string entityName, string entityId);
+
+    /// <summary>
+    /// The roles this entity declared through <c>[MediaRole]</c> or <c>DeclareRoles</c>, and whether
+    /// each holds one file or many. Empty when it declared none, which means it is not checked.
+    /// <para>
+    /// For a UI that has to offer the right roles for whatever it was opened for, rather than
+    /// hard-coding one entity's vocabulary.
+    /// </para>
+    /// </summary>
+    IReadOnlyList<Metadata.MediaEntityRole> RolesFor(string entityName);
 }
 
 /// <summary>

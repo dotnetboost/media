@@ -1,6 +1,8 @@
 using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
+using System.Reflection;
 
 namespace DotNetBoost.Media.Core;
 
@@ -8,6 +10,8 @@ namespace DotNetBoost.Media.Core;
 public sealed class MediaBuilder
 {
     private readonly List<string> _storageBackends = [];
+    private readonly List<Assembly> _roleAssemblies = [];
+    private readonly Dictionary<string, IReadOnlyList<MediaEntityRole>> _declaredRoles = new(StringComparer.Ordinal);
 
     /// <summary>The service collection being configured. Providers and backends register here.</summary>
     public IServiceCollection Services { get; }
@@ -32,6 +36,13 @@ public sealed class MediaBuilder
 
     /// <summary>The names of the storage backends registered so far, in registration order.</summary>
     internal IReadOnlyList<string> StorageBackends => _storageBackends;
+
+    /// <summary>Records an assembly to scan for <c>[MediaRole]</c> at <see cref="Build"/>.</summary>
+    internal void AddRoleAssembly(Assembly assembly) => _roleAssemblies.Add(assembly);
+
+    /// <summary>Records roles declared directly on the builder, for a type that carries no attribute.</summary>
+    internal void AddDeclaredRoles(string entityName, IReadOnlyList<MediaEntityRole> roles) =>
+        Declare(entityName, roles, "declared on the builder");
 
     /// <summary>
     /// Records a storage backend. Called by each <c>Use…()</c> backend method; several backends
@@ -91,10 +102,45 @@ public sealed class MediaBuilder
             sp.GetServices<IMediaStorageProvider>(),
             DefaultStorage));
 
+        // Read here, not when DeclareRolesFrom was called. The name a type's media is stored under is
+        // whatever the rest of the builder settles on, so scanning eagerly would file roles under
+        // names that a later line could still change — and the registry would come back empty at
+        // attach time, silently switching the checking off. Deferring makes the order of these two
+        // lines irrelevant rather than merely documented.
+        foreach (var assembly in _roleAssemblies)
+        {
+            foreach (var (entityName, roles) in MediaEntityRoles.Scan(assembly))
+                Declare(entityName, roles, $"declared by [MediaRole] in {assembly.GetName().Name}");
+        }
+
+        Services.AddSingleton<IMediaRoleRegistry>(new MediaRoleRegistry(_declaredRoles));
+
         if (Options.ValidateStorageAtStartup)
             Services.AddHostedService<MediaValidationHostedService>();
 
         return Services;
+    }
+
+    /// <summary>
+    /// Files one entity's roles, refusing a second set for the same name. Two sources declaring the
+    /// same entity differently is a configuration mistake with no sensible winner — and silently
+    /// picking one would leave the other's roles quietly unenforced.
+    /// </summary>
+    private void Declare(string entityName, IReadOnlyList<MediaEntityRole> roles, string source)
+    {
+        if (roles.Count == 0)
+            return;
+
+        if (_declaredRoles.TryGetValue(entityName, out var existing))
+        {
+            throw new InvalidOperationException(
+                $"Media roles for '{entityName}' are declared twice: once as [{string.Join(", ", existing.Select(r => r.Name))}], " +
+                $"and again {source} as [{string.Join(", ", roles.Select(r => r.Name))}]. Declare each entity's " +
+                "roles once — two types sharing a stored name is usually the cause, and [MediaEntity(\"…\")] " +
+                "is how to tell them apart.");
+        }
+
+        _declaredRoles[entityName] = roles;
     }
 }
 

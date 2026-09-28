@@ -4,6 +4,7 @@ using DotNetBoost.Media.AmazonS3;
 using DotNetBoost.Media.AzureBlobStorage;
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.Core.Services;
 using DotNetBoost.Media.TestSupport;
@@ -243,6 +244,7 @@ public sealed class EndToEndTests(PostgreSqlFixture postgres) : IAsyncLifetime
             new MediaStorageProviderRegistry([storage], defaultProvider: null),
             new DateHierarchyKeyGenerator(clock),
             new ConventionEntityKeyAccessor(),
+            MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
             NullLogger<MediaManager>.Instance);

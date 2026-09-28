@@ -616,4 +616,78 @@ public class WriteEndpointTests
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
+
+    [Fact]
+    public async Task Get_roles_returns_what_the_entity_declares()
+    {
+        await using var app = await TestApp.StartAsync(media => media
+            .DeclareRoles("Product", r => r.One("primary").Many("gallery").One("seo")));
+
+        var roles = await app.Client.GetFromJsonAsync<List<MediaRoleResponse>>(
+            new Uri("/api/media/roles/Product", UriKind.Relative));
+
+        Assert.Equal(
+            [("primary", false), ("gallery", true), ("seo", false)],
+            roles!.Select(r => (r.Name, r.Multiple)));
+    }
+
+    /// <summary>
+    /// An entity that declares nothing is a real entity that accepts any role, so a client should
+    /// get an empty list and offer a free-text box — not a 404 telling it the entity is unknown.
+    /// </summary>
+    [Fact]
+    public async Task Get_roles_is_empty_rather_than_missing_for_an_undeclared_entity()
+    {
+        await using var app = await TestApp.StartAsync(media => media
+            .DeclareRoles("Product", r => r.One("primary")));
+
+        var response = await app.Client.GetAsync(new Uri("/api/media/roles/Invoice", UriKind.Relative));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty((await response.Content.ReadFromJsonAsync<List<MediaRoleResponse>>())!);
+    }
+
+    /// <summary>
+    /// The reason the registry is keyed by entity NAME: this request never sees a Product class, so
+    /// an attribute read at attach time could not have checked it.
+    /// </summary>
+    [Fact]
+    public async Task Attaching_through_the_api_is_checked_against_the_declared_roles()
+    {
+        await using var app = await TestApp.StartAsync(media => media
+            .DeclareRoles("Product", r => r.One("primary").Many("gallery")));
+
+        var uploaded = await UploadAsync(app);
+
+        var response = await app.Client.PostAsJsonAsync(
+            new Uri($"/api/media/{uploaded.Id}/attachments", UriKind.Relative),
+            new AttachMediaRequest { OwnerEntityName = "Product", OwnerEntityId = "1", Role = "galery" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.Contains("no media role 'galery'", problem!.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Attaching_a_second_file_to_a_single_valued_role_through_the_api_is_refused()
+    {
+        await using var app = await TestApp.StartAsync(media => media
+            .DeclareRoles("Product", r => r.One("primary")));
+
+        var first  = await UploadAsync(app, "a.png");
+        var second = await UploadAsync(app, "b.png");
+
+        await AttachAsync(app, first.Id, "Product", "1", "primary");
+
+        var response = await app.Client.PostAsJsonAsync(
+            new Uri($"/api/media/{second.Id}/attachments", UriKind.Relative),
+            new AttachMediaRequest { OwnerEntityName = "Product", OwnerEntityId = "1", Role = "primary" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        // replace: true is the supported way, and it works.
+        var replaced = await AttachAsync(app, second.Id, "Product", "1", "primary", replace: true);
+        Assert.Equal("1", Assert.Single(replaced.Attachments!).OwnerEntityId);
+    }
 }

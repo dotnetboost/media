@@ -158,6 +158,14 @@ namespace DotNetBoost.Media.API
         public IReadOnlyList<Guid>? MediaFileIds { get; init; }
     }
 
+    /// <summary>One role an entity declares, and whether it holds one file or many.</summary>
+    /// <param name="Name">The role's name — <c>primary</c>, <c>gallery</c>, <c>seo</c>.</param>
+    /// <param name="Multiple">
+    /// Whether it holds several files, in order. A client attaching to a single-valued role should
+    /// send <c>replace: true</c>, which is what takes the role over from whatever held it.
+    /// </param>
+    public sealed record MediaRoleResponse(string Name, bool Multiple);
+
     /// <summary>One page of a listing.</summary>
     /// <param name="Items">The page's files, newest first unless asked otherwise.</param>
     /// <param name="Total">How many files match the filter.</param>
@@ -204,6 +212,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// POST   {prefix}/{id}/attachments   attach the file to an entity
         /// DELETE {prefix}/{id}/attachments/{attachmentId}   detach it from one, file untouched
         /// PUT    {prefix}/attachments/order  reorder one entity's files within a role
+        /// GET    {prefix}/roles/{entityName}  the roles that entity declares, if it declares any
         /// </code>
         /// <para>
         /// Note what the two deletes mean. <c>DELETE {prefix}/{id}</c> removes the file from the
@@ -284,6 +293,9 @@ namespace Microsoft.Extensions.DependencyInjection
             group.MapDelete("/{id:guid}/attachments/{attachmentId:guid}", DetachAsync)
                 .WithSummary("Removes one attachment. The file and its bytes are untouched.")
                 .ProducesProblem(StatusCodes.Status404NotFound);
+
+            group.MapGet("/roles/{entityName}", RolesAsync)
+                .WithSummary("The roles an entity declares, for a client that must offer the right ones.");
 
             group.MapPut("/attachments/order", ReorderAsync)
                 .WithSummary("Reorders one entity's files within a role.")
@@ -513,6 +525,19 @@ namespace Microsoft.Extensions.DependencyInjection
             var attachments = await media.GetAttachmentsAsync(id, ct);
 
             return TypedResults.Ok(MediaFileResponse.From(file, url: null, attachments));
+        }
+
+        private static Ok<IReadOnlyList<MediaRoleResponse>> RolesAsync(
+            string entityName,
+            IMediaManager media)
+        {
+            // An entity that declares nothing comes back as an empty list rather than a 404: it is a
+            // real entity that simply accepts any role, and a client should offer a free-text box
+            // rather than conclude it does not exist.
+            var roles = media.RolesFor(entityName);
+
+            return TypedResults.Ok<IReadOnlyList<MediaRoleResponse>>(
+                [.. roles.Select(role => new MediaRoleResponse(role.Name, role.Multiple))]);
         }
 
         private static async Task<NoContent> ReorderAsync(

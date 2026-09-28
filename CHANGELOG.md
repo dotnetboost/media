@@ -71,6 +71,27 @@ Unrelated to the above:
 
 ### Added
 
+- `[MediaRole]`, and the checking it turns on. An entity declares which roles its files may be
+  attached under and whether each holds one file or many; `DeclareRolesFrom(assembly)`,
+  `DeclareRoles<TEntity>()` or `DeclareRoles(name, r => r.One("…").Many("…"))` reads them at
+  `Build()`. Entirely opt-in — an entity that declares nothing accepts any role, exactly as before.
+
+  It catches what the verbs alone cannot. Nothing told `AddAsync` that `primary` was meant to hold
+  one file, and `SetAsync` on a nine-image gallery detached eight of them and looked like it had
+  worked. Both are now refused with a message naming the operation to use instead, as is a
+  misspelled role — which otherwise became an attachment nothing ever read.
+
+  Declarations are filed under the entity's **stored name**, not its type, and read once at startup.
+  Half the ways of attaching have no class to read an attribute from: `media.For("Product", "42")`
+  is two strings, and the library's own REST endpoints never see the application's types at all.
+  Keying by name is what stops the same mistake being refused one way and accepted the other.
+
+  Reading them happens at `Build()` rather than when the builder method is called, so the order of
+  those lines cannot matter — scanning eagerly would file roles under names a later line could still
+  change, and a registry keyed on the wrong name silently checks nothing.
+- `IMediaManager.RolesFor(entityName)` and `GET /api/media/roles/{entityName}`, so a UI can offer the
+  right roles for whatever it was opened for instead of hard-coding one entity's vocabulary. An
+  undeclared entity returns an empty list rather than a 404: it accepts any role.
 - `MediaCategories.Normalize` and `MediaCategories.MaxLength`. The length was a literal `64`
   repeated in the EF Core mapping and the Dapper DDL while every other column's came from a Core
   constant; both now read it from one place.

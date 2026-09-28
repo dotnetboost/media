@@ -15,6 +15,7 @@ internal sealed partial class MediaManager(
     IMediaStorageProviderRegistry storage,
     IMediaKeyGenerator keyGenerator,
     IEntityKeyAccessor keyAccessor,
+    IMediaRoleRegistry roles,
     MediaOptions options,
     TimeProvider timeProvider,
     ILogger<MediaManager> logger) : IMediaManager
@@ -23,6 +24,9 @@ internal sealed partial class MediaManager(
 
     /// <summary>The engine's clock, for the accessor that writes attachment rows beside it.</summary>
     internal DateTime Now => timeProvider.GetUtcNow().UtcDateTime;
+
+    /// <summary>What each entity declares its roles to be. Empty unless the application said so.</summary>
+    internal IMediaRoleRegistry Roles => roles;
 
     // A field, not the primary-constructor parameter: the net8.0 [LoggerMessage] generator (from
     // the 8.0 logging packages) only finds a logger held in a field, and writes invalid code for a
@@ -275,6 +279,13 @@ internal sealed partial class MediaManager(
     }
 
     /// <inheritdoc/>
+    public IReadOnlyList<MediaEntityRole> RolesFor(string entityName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        return roles.RolesFor(entityName);
+    }
+
+    /// <inheritdoc/>
     public IMediaAccessor For(object entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
@@ -437,7 +448,11 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     public async Task<IReadOnlyList<MediaFileInfo>> ListByRoleAsync(string role, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
-        return await ListCoreAsync(MediaRoles.Normalize(role), ct).ConfigureAwait(false);
+
+        var normalized = MediaRoles.Normalize(role);
+        Declared(normalized);
+
+        return await ListCoreAsync(normalized, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -484,7 +499,16 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
 
         var normalized = MediaRoles.Normalize(role);
-        var files      = await ListCoreAsync(normalized, ct).ConfigureAwait(false);
+
+        if (Declared(normalized) is { Multiple: true })
+        {
+            throw new InvalidMediaException(
+                $"'{normalized}' is multi-valued on {owner.EntityName}, so asking for the one file holding it " +
+                "has no answer. List the role instead — ListByRoleAsync in code, or the role filter on the " +
+                "listing endpoint.");
+        }
+
+        var files = await ListCoreAsync(normalized, ct).ConfigureAwait(false);
 
         if (files.Count > 1)
         {
@@ -501,6 +525,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     public async Task<MediaFileInfo> AddAsync(Guid id, string? role = null, CancellationToken ct = default)
     {
         var normalized = MediaRoles.Normalize(role);
+        var declared   = Declared(normalized);
 
         // Requires a live file before writing a link, so an attach cannot invent a reference to
         // something deleted or never uploaded.
@@ -508,9 +533,20 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         var existing = await store.ListAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
 
         // Already attached here in this role: nothing to do. A double-clicked button and a retried
-        // request both land here, and neither should be an error or a second row.
+        // request both land here, and neither should be an error or a second row. Checked before the
+        // single-valued rule below, because re-attaching the file that already holds the role is a
+        // no-op rather than an attempt at a second one.
         if (existing.Any(a => a.MediaFileId == id))
             return file;
+
+        if (declared is { Multiple: false } && existing.Count > 0)
+        {
+            throw new InvalidMediaException(
+                $"'{normalized}' is single-valued on {owner.EntityName}, and a file already holds it. Replace " +
+                "it rather than appending — SetAsync in code, or \"replace\": true through the REST API. The " +
+                "file it displaces is detached, not deleted. If the role is meant to hold several, declare it " +
+                $"as [MediaRole(\"{normalized}\", Multiple = true)].");
+        }
 
         await AttachAsync(id, normalized, Next(existing), ct).ConfigureAwait(false);
         return file;
@@ -522,6 +558,15 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         ArgumentException.ThrowIfNullOrWhiteSpace(role);
 
         var normalized = MediaRoles.Normalize(role);
+
+        if (Declared(normalized) is { Multiple: true })
+        {
+            throw new InvalidMediaException(
+                $"'{normalized}' is multi-valued on {owner.EntityName}. Replacing would detach every other file " +
+                "in it, leaving one — append instead (AddAsync in code, or omit \"replace\" through the REST " +
+                "API), and use ReorderAsync to change the order.");
+        }
+
         var file       = await manager.GetAsync(id, ct).ConfigureAwait(false);
         var holders    = await store.ListAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
 
@@ -546,6 +591,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         ArgumentNullException.ThrowIfNull(idsInOrder);
 
         var normalized = MediaRoles.Normalize(role);
+        Declared(normalized);
         var attached   = await store.ListAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
         var byFile     = attached.ToDictionary(a => a.MediaFileId);
 
@@ -629,6 +675,25 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         }
 
         return deleted;
+    }
+
+    /// <summary>
+    /// What this entity declared <paramref name="role"/> to be, or <c>null</c> when the entity
+    /// declares no roles at all and is therefore not checked.
+    /// </summary>
+    /// <exception cref="InvalidMediaException">
+    /// The entity declares roles and this is not one of them — a misspelling, caught here rather
+    /// than found later as an attachment nothing reads.
+    /// </exception>
+    private MediaEntityRole? Declared(string role)
+    {
+        if (!manager.Roles.Declares(owner.EntityName))
+            return null;
+
+        return manager.Roles.Find(owner.EntityName, role)
+               ?? throw new InvalidMediaException(
+                   $"{owner.EntityName} has no media role '{role}'. It declares: " +
+                   $"{string.Join(", ", manager.Roles.RolesFor(owner.EntityName).Select(r => r.Multiple ? r.Name + " (many)" : r.Name))}.");
     }
 
     /// <summary>Writes one link, with the id and timestamp the engine assigns.</summary>

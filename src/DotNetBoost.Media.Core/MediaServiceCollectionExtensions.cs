@@ -1,7 +1,9 @@
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
+using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Reflection;
 
 namespace Microsoft.Extensions.DependencyInjection
 {
@@ -37,6 +39,10 @@ namespace Microsoft.Extensions.DependencyInjection
             services.TryAddSingleton<IMediaKeyGenerator, DateHierarchyKeyGenerator>();
             services.TryAddSingleton<IEntityKeyAccessor, ConventionEntityKeyAccessor>();
 
+            // An empty registry until Build() replaces it, so an engine built without one — a test
+            // constructing MediaManager directly, say — checks nothing rather than failing to resolve.
+            services.TryAddSingleton<IMediaRoleRegistry>(MediaRoleRegistry.Empty);
+
             // Scoped: the metadata store is (an EF Core DbContext, a Dapper connection), and the
             // engine is only as long-lived as the store behind it.
             services.TryAddScoped<MediaManager>();
@@ -51,6 +57,82 @@ namespace Microsoft.Extensions.DependencyInjection
     /// <summary>Builder methods for engine behaviour.</summary>
     public static class MediaBuilderExtensions
     {
+        /// <summary>
+        /// Reads every <c>[MediaRole]</c> in <paramref name="assembly"/> and enforces what it finds.
+        /// <code>
+        /// services.AddMedia()
+        ///         .UseEntityFrameworkCore&lt;AppDbContext&gt;()
+        ///         .UseFileSystem("./uploads")
+        ///         .DeclareRolesFrom(typeof(Product).Assembly)
+        ///         .Build();
+        /// </code>
+        /// <para>
+        /// Only entities that declare roles are checked; everything else keeps working exactly as it
+        /// did. The scan happens at <c>Build()</c>, so this line may sit anywhere in the chain.
+        /// </para>
+        /// </summary>
+        public static MediaBuilder DeclareRolesFrom(this MediaBuilder builder, Assembly assembly)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+            ArgumentNullException.ThrowIfNull(assembly);
+
+            builder.AddRoleAssembly(assembly);
+            return builder;
+        }
+
+        /// <summary>
+        /// Reads the <c>[MediaRole]</c> attributes on one type. For declaring a single entity without
+        /// scanning its whole assembly.
+        /// </summary>
+        /// <exception cref="InvalidOperationException"><typeparamref name="TEntity"/> declares no roles.</exception>
+        public static MediaBuilder DeclareRoles<TEntity>(this MediaBuilder builder)
+            where TEntity : class
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+
+            var roles = MediaEntityRoles.Of(typeof(TEntity));
+
+            if (roles.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"{typeof(TEntity).FullName} declares no media roles, so there is nothing to enforce. Put " +
+                    "[MediaRole(\"…\")] on it, or use the DeclareRoles(name, …) overload to declare them here.");
+            }
+
+            builder.AddDeclaredRoles(MediaEntityNames.For(typeof(TEntity)), roles);
+            return builder;
+        }
+
+        /// <summary>
+        /// Declares an entity's roles on the builder rather than on the class — for a type you cannot
+        /// put an attribute on, or an entity you only ever reach by name.
+        /// <code>
+        /// .DeclareRoles("Order", r =&gt; r.One("invoice").Many("packing-slip"))
+        /// </code>
+        /// </summary>
+        public static MediaBuilder DeclareRoles(
+            this MediaBuilder builder,
+            string entityName,
+            Action<MediaRoleDeclaration> declare)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+            ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+            ArgumentNullException.ThrowIfNull(declare);
+
+            var declaration = new MediaRoleDeclaration();
+            declare(declaration);
+
+            if (declaration.Roles.Count == 0)
+            {
+                throw new InvalidOperationException(
+                    $"No media roles were declared for '{entityName}'. Call One(…) or Many(…) at least once, " +
+                    "or leave the entity undeclared — an entity that declares nothing is not checked.");
+            }
+
+            builder.AddDeclaredRoles(entityName, declaration.Roles);
+            return builder;
+        }
+
         /// <summary>
         /// Caps how large an upload may be (default: 100 MB). Remember that ASP.NET Core has its
         /// own request-body limit, and the smaller of the two applies.

@@ -78,10 +78,64 @@ foreach (var attached in await media.For(product).ListWithRolesAsync(ct))
 image appears twice, once under each role — that is the question it answers. `ListAsync` asks the
 other one, "which files does this entity use", and returns each of them once.
 
+### Declaring an entity's roles
+
+By default a role is free text and nothing checks it. An entity can opt in by declaring what it
+accepts, and then the engine enforces it:
+
+```csharp
+[MediaEntity("Product")]
+[MediaRole("primary")]                    // one file
+[MediaRole("gallery", Multiple = true)]   // many, in order
+[MediaRole("seo")]
+public class Product { public int Id { get; set; } }
+```
+
+```csharp
+services.AddMedia()
+    .UseEntityFrameworkCore<AppDbContext>()
+    .UseFileSystem("./uploads")
+    .DeclareRolesFrom(typeof(Product).Assembly)   // ← reads every [MediaRole]
+    .Build();
+```
+
+Without that builder line the attributes are documentation and nothing more. **An entity that
+declares nothing is not checked at all**, so adding this breaks nothing that already works.
+
+What it catches:
+
+| | |
+|---|---|
+| `AddAsync(id, "galery")` | *Product has no media role 'galery'. It declares: primary, gallery (many), seo.* |
+| `AddAsync(id, "primary")` when one is held | *'primary' is single-valued… Replace it rather than appending* |
+| `SetAsync("gallery", id)` | *'gallery' is multi-valued… Replacing would detach every other file in it* |
+
+That second pair is the point. The verbs alone cannot object: nothing tells `AddAsync` that
+`primary` is meant to hold one file, and `SetAsync` on a nine-image gallery silently detaches eight
+of them and looks like it worked.
+
+Declarations are read once, at `Build()`, and filed under the entity's **stored name**. That matters
+because `media.For("Product", "42")` has no class to read an attribute from, and neither do the
+library's own REST endpoints — checking one path and not the other would be worse than not checking,
+because you would think you were covered.
+
+For a type you cannot annotate, declare it on the builder instead. Both fill the same registry:
+
+```csharp
+.DeclareRoles("Order", r => r.One("invoice").Many("packing-slip"))
+```
+
+And a UI that must offer the right roles for whatever it was opened for can ask:
+
+```csharp
+foreach (var role in media.RolesFor("Product"))
+    Console.WriteLine($"{role.Name}{(role.Multiple ? " (many)" : "")}");
+```
+
 ### Roles are free text, lower-cased
 
 `MediaRoles` names the three this library expects to see (`Default`, `Primary`, `Gallery`) but the
-set is open: `hero`, `thumbnail`, `datasheet` are all fine. Roles are lower-cased on write, so
+set is open: `hero`, `thumbnail`, `datasheet` are all fine — declared or not. Roles are lower-cased on write, so
 `Primary` and `primary` are one role rather than two — as categories and tags are.
 
 A role is never null. It defaults to `MediaRoles.Default`, which is what lets the uniqueness
