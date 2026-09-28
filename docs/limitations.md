@@ -19,6 +19,32 @@ that is still being written.
 With the EF Core store, an upload inside your own transaction is *more* consistent, not less: the
 row rolls back with everything else. The bytes do not — same sweep.
 
+## An upload saves your EF Core context
+
+The bytes are written before the row, so the row must be durable before `UploadAsync` returns. With
+the EF Core store that means `SaveChangesAsync` on the context you configured — and that context is
+yours, so every other change it is tracking is committed alongside the media row.
+
+```csharp
+product.Name = request.Name;                      // not saved yet
+
+await media.For(product).UploadAsync(upload, ct); // saves the media row AND the name
+```
+
+Inside an explicit transaction this is exactly what you want: the upload joins the unit of work and
+everything commits or rolls back together. Outside one, an upload in the middle of a half-built
+aggregate commits the half — and a later failure leaves it committed.
+
+So either take a transaction around the whole unit of work, or save your own changes before
+uploading, leaving nothing pending to flush. It is the price of the rows living in your context
+instead of one of the library's own, and the same property is what lets an entity and its media
+commit together at all — see [metadata-stores.md](metadata-stores.md#entity-framework-core).
+
+The other two stores do not have this problem, because neither holds any unsaved work of yours to
+flush. The Dapper store runs each statement on your connection as it comes — inside your
+transaction when you hand it one with `WithTransaction` — and the MongoDB store writes its own
+document.
+
 ## Deleting an entity does not delete its files
 
 There is no foreign key from an attachment row to your table, which is exactly what lets two tables

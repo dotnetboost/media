@@ -149,10 +149,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 {
     public DbSet<Product> Products => Set<Product>();
     public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
+    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.ApplyMedia();     // adds the MediaFiles table
+        modelBuilder.ApplyMedia();     // adds the two tables
     }
 }
 ```
