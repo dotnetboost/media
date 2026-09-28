@@ -208,7 +208,7 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Returns the existing file when an upload's bytes are already stored, instead of keeping
         /// a second copy. Requires checksums, which are on by default.
         /// <para>
-        /// The shared row carries the FIRST upload's name and owner, and deleting it deletes it
+        /// The shared row carries the FIRST upload's name and uploader, and deleting it deletes it
         /// for everyone who "uploaded" those bytes — right for interchangeable assets, wrong for
         /// somebody's document. See <see cref="MediaOptions.DeduplicateByChecksum"/>.
         /// </para>

@@ -53,6 +53,29 @@ await transaction.CommitAsync(ct);
 If the transaction rolls back, the row goes with it. (The bytes do not — a blob store is not in
 your transaction. See [limitations.md](limitations.md).)
 
+**An upload saves your context.** The bytes are written before the row, so the row has to be
+durable before `UploadAsync` returns — which means the store calls `SaveChangesAsync` on the
+context you gave it. That is *your* context, so anything else it is tracking is written too. In the
+example above, `product.Name` is already written by the time the explicit `SaveChangesAsync` runs;
+the transaction is what makes that safe, because nothing is committed until `CommitAsync` and a
+rollback takes the name with it.
+
+Without a transaction there is no such safety net, and an upload in the middle of a half-built
+aggregate commits the half. Two ways out, and the first is usually right — wrap the unit of work,
+as above, so the upload joins it; or finish your own writes first, so there is nothing pending to
+flush:
+
+```csharp
+product.Name = request.Name;
+await db.SaveChangesAsync(ct);                     // your work, committed on its own
+
+await media.For(product).UploadAsync(upload, ct);  // now it has only the media row to save
+```
+
+This is the cost of the rows living in your context rather than a context of their own, and it buys
+the paragraph above: one transaction over your entity and its media. A store that owned its own
+context could not flush your work — and could not commit with it either.
+
 Supported engines: SQL Server, PostgreSQL, SQLite. Timestamps are stored UTC and read back as
 `DateTimeKind.Utc` through a value converter, because SQL Server and SQLite both otherwise return
 `Unspecified` — which serializes to JSON without a `Z` and is read by every client as local time.
