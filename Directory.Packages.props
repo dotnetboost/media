@@ -89,7 +89,8 @@
          Docker Hub or quay.io, so a MinIO-based suite cannot restore its own container. -->
     <PackageVersion Include="Testcontainers.Azurite" Version="4.15.0" />
     <PackageVersion Include="Testcontainers.LocalStack" Version="4.15.0" />
-    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.6" />
+    <!-- Microsoft.Data.SqlClient follows the EF Core major rather than living here: see the two
+         per-TFM groups below. -->
   </ItemGroup>
 
   <ItemGroup Label="Testing">
@@ -157,6 +158,12 @@
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="8.0.30" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.30" />
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
+    <!-- The raw ADO.NET drivers, on the majors the EF providers beside them resolve — EF Core
+         8.0.30 asks for Microsoft.Data.SqlClient 5.1.9, and that is what a net8.0 application
+         using this library actually gets. The 6.x line drags in Azure.Core 1.55, which requires
+         Microsoft.Extensions.* 10.0.3 and so cannot be restored against the 8.0 pins above. -->
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="5.2.3" />
+    <PackageVersion Include="Npgsql" Version="8.0.9" />
   </ItemGroup>
 
   <ItemGroup Label="EF Core / ASP.NET Core — net10.0" Condition="'$(_Net8)' != 'true'">
@@ -167,8 +174,9 @@
     <PackageVersion Include="Microsoft.AspNetCore.TestHost" Version="10.0.11" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.11" />
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
-    <!-- The raw ADO.NET driver, for the Dapper sample. Same version the EF provider above
-         resolves, so the two share one restored Npgsql. -->
+    <!-- The raw ADO.NET drivers, for the Dapper sample and the SQL Server integration tests.
+         Same versions the EF providers above resolve, so each is restored once. -->
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.6" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 </Project>

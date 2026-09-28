@@ -2,9 +2,29 @@
   <PropertyGroup>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
-    <!-- net10.0 only. These start real servers in containers; running the same suite twice to
-         prove a TFM difference that cannot exist would double an already slow job. -->
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- Both TFMs. What differs between them is not the runtime — the source is identical, with
+         no conditional compilation anywhere in src/ — but the dependencies: a net8.0 build
+         resolves EF Core 8.0.30 and the 8.0.11 Npgsql provider, a net10.0 build 10.0.11 and
+         10.0.3. Those are the query pipelines that turn the stores' LINQ into the SQL these tests
+         send to real PostgreSQL and SQL Server, and two majors apart they do not always turn it
+         into the same SQL. ProviderTests runs both TFMs but only over SQLite, which cannot show
+         that up.
+
+         It does double the containers, so CI runs the two as parallel jobs rather than one job
+         running the suite twice — see the matrix in ci.yml.
+
+         TargetFramework is cleared first: the root Directory.Build.props sets it, the singular
+         property wins over the plural one, and leaving it would quietly build net10.0 alone —
+         which looks like a passing build and a passing `-f net8.0` test run that executed
+         nothing at all. -->
+    <TargetFramework />
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <!-- Off for this project alone, as it is for src/. This is the only test project that pulls
+         the Azure and S3 backends, so it is the only one whose graph contains a current Azure.Core
+         — which requires Microsoft.Extensions.* 10.0.3 and cannot be pinned back to the 8.0 line
+         the other net8.0 test projects hold. Letting those resolve is also the more honest test:
+         it is what a net8.0 application using the Azure backend actually restores. -->
+    <CentralPackageTransitivePinningEnabled>false</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
