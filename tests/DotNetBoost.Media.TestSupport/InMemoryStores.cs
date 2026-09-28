@@ -39,11 +39,20 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc cref="Queries"/>
     public int Counts => Volatile.Read(ref _counts);
 
-    /// <summary>Zeroes the read counters, so a test can measure one call rather than its setup.</summary>
+    private int _attachmentWrites;
+
+    /// <summary>
+    /// How many attachment writes have been issued, counting a batch as the one command it is.
+    /// A test can then assert that saving a reorder costs one round trip rather than one per file.
+    /// </summary>
+    public int AttachmentWrites => Volatile.Read(ref _attachmentWrites);
+
+    /// <summary>Zeroes the counters, so a test can measure one call rather than its setup.</summary>
     public void ResetCounters()
     {
         Interlocked.Exchange(ref _queries, 0);
         Interlocked.Exchange(ref _counts, 0);
+        Interlocked.Exchange(ref _attachmentWrites, 0);
     }
 
     /// <inheritdoc/>
@@ -205,13 +214,49 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc/>
     public Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref _attachmentWrites);
+        Apply(attachment);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return Task.CompletedTask;
+
+        // Counted as one, because that is what it is against a real store: one command, one
+        // transaction. Counting it per row would hide the very thing a test asserting on this
+        // wants to see.
+        Interlocked.Increment(ref _attachmentWrites);
+
+        // Checked before any of them is applied, so a batch naming a row that is gone leaves the
+        // rest alone — the all-or-nothing a real store gets from its transaction.
+        foreach (var attachment in attachments)
+        {
+            ArgumentNullException.ThrowIfNull(attachment);
+
+            if (!_attachments.ContainsKey(attachment.Id))
+                throw new MediaNotFoundException(attachment.Id);
+        }
+
+        foreach (var attachment in attachments)
+            Apply(attachment);
+
+        return Task.CompletedTask;
+    }
+
+    private void Apply(MediaAttachment attachment)
+    {
         ArgumentNullException.ThrowIfNull(attachment);
 
         if (!_attachments.ContainsKey(attachment.Id))
             throw new MediaNotFoundException(attachment.Id);
 
         _attachments[attachment.Id] = Clone(attachment);
-        return Task.CompletedTask;
     }
 
     /// <inheritdoc/>

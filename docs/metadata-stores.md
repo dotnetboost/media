@@ -161,3 +161,9 @@ services.AddMedia()
 
 Stores are deliberately dumb: validation, checksums, deduplication, soft delete and the ordering of
 the two writes all live in the engine. A store persists rows. Run `StoreContractTests` against it.
+
+One method is worth reading twice. `UpdateAttachmentsAsync` is handed every link a reorder moved,
+and is meant to write them **in one operation**: looping over `UpdateAttachmentAsync` will pass the
+contract tests, but it costs a round trip per image and — because each call commits — it lets a
+failure halfway through leave a gallery in an order nobody chose. The shipped stores use one
+batched `SaveChanges`, one `BulkWrite`, and one statement on the caller's own connection.

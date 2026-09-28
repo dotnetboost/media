@@ -369,6 +369,42 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     }
 
     /// <inheritdoc/>
+    public async Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return;
+
+        // One BulkWrite, so a reorder is one round trip however long the gallery is. Unordered:
+        // these are replacements of distinct documents with no dependency between them, and an
+        // unordered batch lets the server apply them in parallel.
+        var writes = attachments
+            .Select(attachment => new ReplaceOneModel<MediaAttachment>(
+                Link.Eq(a => a.Id, attachment.Id), attachment) { IsUpsert = false })
+            .ToList();
+
+        var result = await _attachments
+            .BulkWriteAsync(writes, new BulkWriteOptions { IsOrdered = false }, ct)
+            .ConfigureAwait(false);
+
+        if (result.MatchedCount < attachments.Count)
+        {
+            // Which one is worth a second look: the caller is holding rows it read a moment ago
+            // and needs to know that one of them has since been detached.
+            var ids     = attachments.Select(a => a.Id).ToArray();
+            var present = await _attachments
+                .Find(Link.In(a => a.Id, ids))
+                .Project(a => a.Id)
+                .ToListAsync(ct)
+                .ConfigureAwait(false);
+
+            throw new MediaNotFoundException(ids.Except(present).FirstOrDefault());
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
         Guid mediaFileId, CancellationToken ct = default) =>
         await _attachments

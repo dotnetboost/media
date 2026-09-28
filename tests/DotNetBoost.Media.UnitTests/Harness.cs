@@ -132,6 +132,9 @@ internal sealed class FailingMediaStore : IMediaStore
     public Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default) =>
         Task.CompletedTask;
 
+    public Task UpdateAttachmentsAsync(IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default) =>
+        Task.CompletedTask;
+
     public Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<MediaAttachment>>([]);
 

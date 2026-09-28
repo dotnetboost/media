@@ -439,6 +439,93 @@ public sealed class DapperMediaStore(
     }
 
     /// <inheritdoc/>
+    public async Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return;
+
+        // Dapper's multi-exec: one command, prepared once, executed per row on the connection
+        // already open — and, where the application has one, inside its transaction, so a reorder
+        // commits whole or not at all. It is not one round trip the way the EF Core and MongoDB
+        // stores manage, because a single UPDATE covering every row means a CASE expression built
+        // per call, which cannot be cached with the rest of the statements and runs into the
+        // provider's parameter limit on a large gallery. The round trips are on one open
+        // connection and a reorder is a user's drag, not a hot read.
+        var affected = await ExecuteAsync(
+            Sql.UpdateAttachment,
+            attachments.Select(a => new { a.Id, a.Role, a.SortOrder }).ToArray(),
+            ct).ConfigureAwait(false);
+
+        if (affected >= attachments.Count)
+            return;
+
+        // One of them is gone. Which one is worth the extra read — the caller is holding rows it
+        // listed a moment ago and needs to know which has since been detached — and it is an error
+        // path, so the cost buys a usable message rather than slowing anything down.
+        var ids     = attachments.Select(a => a.Id).ToArray();
+        var present = await FindPresentAttachmentsAsync(ids, ct).ConfigureAwait(false);
+        var missing = ids.Except(present).ToArray();
+
+        throw new MediaNotFoundException(missing.Length > 0 ? missing[0] : Guid.Empty);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="ids"/> still have an attachment row, in as few statements as the
+    /// batch size allows.
+    /// </summary>
+    private async Task<HashSet<Guid>> FindPresentAttachmentsAsync(Guid[] ids, CancellationToken ct)
+    {
+        var sql     = Sql;
+        var present = new HashSet<Guid>();
+
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        foreach (var batch in ids.Distinct().Chunk(ShareProbeBatch))
+        {
+            // Each id its own parameter, for the reason FindSharedAsync spells out: handed a
+            // collection, Dapper passes it to Npgsql as a single array parameter, which PostgreSQL
+            // accepts after "= ANY(...)" and rejects as a syntax error after IN.
+            var parameters = new DynamicParameters();
+            var names      = new string[batch.Length];
+
+            for (var i = 0; i < batch.Length; i++)
+            {
+                names[i] = "@id" + i.ToString(CultureInfo.InvariantCulture);
+                parameters.Add("id" + i.ToString(CultureInfo.InvariantCulture), batch[i]);
+            }
+
+            var statement =
+                $"SELECT {C("Id")} FROM {sql.AttachmentTable} WHERE {C("Id")} IN ({string.Join(", ", names)})";
+
+            // Read by hand, as FindSharedAsync does: the id is a Guid on SQL Server and PostgreSQL
+            // and text on SQLite, and Query<Guid> cannot bridge that.
+            var found = await UnitOfWork.RunAsync(
+                _connection,
+                async () =>
+                {
+                    await using var reader = await _connection.ExecuteReaderAsync(
+                        new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                        ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+
+                    var read = new List<Guid>();
+
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        read.Add(MediaFileMapper.Guid(reader, 0));
+
+                    return read;
+                },
+                ct).ConfigureAwait(false);
+
+            present.UnionWith(found);
+        }
+
+        return present;
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
         Guid mediaFileId, CancellationToken ct = default) =>
         await QueryAttachmentsAsync(Sql.SelectAttachmentsOfFile, new { MediaFileId = mediaFileId }, ct)

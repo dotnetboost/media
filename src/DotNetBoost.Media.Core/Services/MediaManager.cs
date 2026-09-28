@@ -609,8 +609,11 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         if (holders.Count == 1 && holders[0].MediaFileId == id)
             return file;
 
-        foreach (var holder in holders)
-            await store.RemoveAttachmentAsync(holder.Id, ct).ConfigureAwait(false);
+        // One statement rather than one per holder. A single-valued role normally has exactly one
+        // to displace, but the role filter already exists and removing them one at a time would
+        // leave a window in which the role had some of its old holders and none of its new one.
+        if (holders.Count > 0)
+            await store.RemoveAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
 
         // Position zero: a role that holds one file has no ordering to preserve, and leaving the
         // displaced file's index behind would start the next gallery at 4.
@@ -638,6 +641,8 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 "A partial order has no meaning — the files left out would have no defined position.");
         }
 
+        var moved = new List<MediaAttachment>(idsInOrder.Count);
+
         for (var i = 0; i < idsInOrder.Count; i++)
         {
             var attachment = byFile[idsInOrder[i]];
@@ -646,8 +651,17 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 continue;
 
             attachment.SortOrder = i;
-            await store.UpdateAttachmentAsync(attachment, ct).ConfigureAwait(false);
+            moved.Add(attachment);
         }
+
+        if (moved.Count == 0)
+            return;
+
+        // One call for the whole gallery. Saved row by row this would be one round trip per image
+        // — and one commit per image, so a failure halfway would leave the gallery in an order the
+        // user never chose and cannot describe. The rows that did not move are left out: they are
+        // already where they belong, and writing them would only widen what a failure can spoil.
+        await store.UpdateAttachmentsAsync(moved, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>

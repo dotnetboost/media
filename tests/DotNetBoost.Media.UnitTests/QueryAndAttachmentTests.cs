@@ -537,6 +537,48 @@ public class AttachmentOrderTests
         Assert.Equal([0, 1, 2], harness.Store.Attachments.OrderBy(a => a.SortOrder).Select(a => a.SortOrder));
     }
 
+    /// <summary>
+    /// A drag-and-drop gallery saves the whole order at once, and the store is asked once. Row by
+    /// row this was a round trip per image — and a commit per image, so a failure partway left the
+    /// gallery in an order the user never chose.
+    /// </summary>
+    [Fact]
+    public async Task Reorder_saves_the_whole_gallery_in_one_write()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        var ids = await GalleryOf(harness, product, "a.png", "b.png", "c.png", "d.png", "e.png");
+        harness.Store.ResetCounters();
+
+        // Enumerable.Reverse explicitly: on an array, ids.Reverse() binds to Array.Reverse, which
+        // sorts in place and returns void.
+        await harness.Media.For(product).ReorderAsync("gallery", [.. Enumerable.Reverse(ids)]);
+
+        Assert.Equal(1, harness.Store.AttachmentWrites);
+
+        var gallery = await harness.Media.For(product).ListByRoleAsync("gallery");
+        Assert.Equal(["e.png", "d.png", "c.png", "b.png", "a.png"], gallery.Select(f => f.FileName));
+    }
+
+    /// <summary>
+    /// And an order that is already the order costs nothing at all — a gallery re-saved without
+    /// being touched should not write.
+    /// </summary>
+    [Fact]
+    public async Task Reorder_into_the_order_it_already_has_writes_nothing()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        var ids = await GalleryOf(harness, product, "a.png", "b.png", "c.png");
+        harness.Store.ResetCounters();
+
+        await harness.Media.For(product).ReorderAsync("gallery", ids);
+
+        Assert.Equal(0, harness.Store.AttachmentWrites);
+    }
+
     [Fact]
     public async Task Reorder_renumbers_the_role()
     {

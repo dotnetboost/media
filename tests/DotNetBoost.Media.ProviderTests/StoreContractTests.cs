@@ -657,6 +657,71 @@ public abstract class StoreContractTests : IAsyncLifetime
         await Assert.ThrowsAsync<MediaNotFoundException>(() => Store.UpdateAttachmentAsync(Link(row.Id)));
     }
 
+    /// <summary>
+    /// What a reorder saves. Every row in one call, so a store can do it in one command and one
+    /// transaction rather than one of each per image.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAttachments_writes_every_new_position_at_once()
+    {
+        var owner = new MediaOwner("Product", "1");
+        var links = new List<MediaAttachment>();
+
+        for (var i = 0; i < 5; i++)
+        {
+            var row = Row();
+            await Store.AddAsync(row);
+
+            var link = Link(row.Id, role: "gallery", sortOrder: i, minutesLate: i);
+            await Store.AddAttachmentAsync(link);
+            links.Add(link);
+        }
+
+        // Reversed, which is the case that matters: every row moves, and none of the new
+        // positions is free, so a store writing them one at a time would pass through states
+        // where two links share a position.
+        var reordered = await Store.ListAttachmentsAsync(owner, "gallery");
+        var wanted    = reordered.Reverse().ToArray();
+
+        for (var i = 0; i < wanted.Length; i++)
+            wanted[i].SortOrder = i;
+
+        await Store.UpdateAttachmentsAsync(wanted);
+
+        var after = await Store.ListAttachmentsAsync(owner, "gallery");
+
+        Assert.Equal(
+            links.Select(l => l.MediaFileId).Reverse(),
+            after.Select(a => a.MediaFileId));
+
+        Assert.Equal([0, 1, 2, 3, 4], after.Select(a => a.SortOrder));
+    }
+
+    [Fact]
+    public async Task UpdateAttachments_does_nothing_when_given_nothing() =>
+        await Store.UpdateAttachmentsAsync([]);
+
+    /// <summary>
+    /// A batch naming a link that has since been detached is reported, and reported as the
+    /// missing link rather than as some generic write failure.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAttachments_throws_for_a_link_that_is_not_there()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var present = Link(row.Id, role: "gallery");
+        await Store.AddAttachmentAsync(present);
+
+        var absent = Link(row.Id, role: "gallery", sortOrder: 1);
+
+        var thrown = await Assert.ThrowsAsync<MediaNotFoundException>(
+            () => Store.UpdateAttachmentsAsync([present, absent]));
+
+        Assert.Equal(absent.Id, thrown.Id);
+    }
+
     [Fact]
     public async Task RemoveAttachment_removes_one_link_and_leaves_the_file()
     {

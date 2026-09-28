@@ -90,9 +90,23 @@ public interface IMediaStore
     /// <returns>How many rows were removed.</returns>
     Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default);
 
-    /// <summary>Saves a changed attachment row, matched on its id. Backs reordering.</summary>
+    /// <summary>Saves a changed attachment row, matched on its id.</summary>
     /// <exception cref="MediaNotFoundException">No attachment has that id.</exception>
     Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default);
+
+    /// <summary>
+    /// Saves several changed attachment rows at once, each matched on its id. Backs reordering,
+    /// where one call per row is the wrong shape twice over: a fifty-image gallery would pay fifty
+    /// round trips to save one drag, and — because a store commits per call — a failure partway
+    /// through would leave the gallery in an order nobody asked for and no one can name.
+    /// <para>
+    /// An empty collection does nothing. Rows whose values already match may or may not be
+    /// rewritten; the contract is about the state afterwards, not about how many rows were
+    /// touched.
+    /// </para>
+    /// </summary>
+    /// <exception cref="MediaNotFoundException">One of them no longer exists.</exception>
+    Task UpdateAttachmentsAsync(IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default);
 
     /// <summary>Every attachment of one file, whoever it belongs to, oldest first.</summary>
     Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(

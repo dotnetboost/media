@@ -301,6 +301,44 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
     }
 
     /// <inheritdoc/>
+    public async Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return;
+
+        foreach (var attachment in attachments)
+        {
+            if (_context.Entry(attachment).State == EntityState.Detached)
+                _context.Set<MediaAttachment>().Update(attachment);
+        }
+
+        try
+        {
+            // One SaveChanges for the lot, which EF sends as one batched command inside one
+            // transaction. That is the whole point: a reorder either takes or it does not.
+            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // EF expected each UPDATE to touch a row and one of them touched none, which for rows
+            // with no concurrency token means the row is gone rather than that it was changed
+            // underneath us.
+            var missing = ex.Entries
+                .Select(entry => entry.Entity)
+                .OfType<MediaAttachment>()
+                .FirstOrDefault();
+
+            foreach (var entry in ex.Entries)
+                entry.State = EntityState.Detached;
+
+            throw new MediaNotFoundException(missing?.Id ?? Guid.Empty) { Source = ex.Source };
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
         Guid mediaFileId, CancellationToken ct = default) =>
         await _context.Set<MediaAttachment>()

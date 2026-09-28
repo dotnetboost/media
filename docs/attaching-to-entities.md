@@ -60,6 +60,11 @@ await media.For(product).ReorderAsync("gallery", ids, ct);  // saves a dragged o
 `AddAsync` is idempotent. Attaching a file that is already attached in that role changes nothing, so
 a double-clicked button and a retried request are both harmless.
 
+`ReorderAsync` wants every file in the role, in the order you want them — a partial list has no
+unambiguous meaning, since the files left out would have no defined position. It saves the whole
+order in **one write**, so a dragged gallery either takes or does not; the files that did not
+actually move are left alone, and reordering into the order a role already has writes nothing.
+
 ### Reading them back
 
 ```csharp

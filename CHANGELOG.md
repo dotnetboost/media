@@ -38,7 +38,11 @@ new migration**: the model gained an entity type and lost two properties.
 - `IMediaManager.DeleteAsync` cascades every attachment, so deleting a file removes it from every
   entity using it. Attachment rows go outright even under `SoftDelete`: a tombstoned file that still
   read as attached to a live entity would be worse than no record at all.
-- `IMediaStore` gains seven attachment operations. Custom stores must implement them.
+- `IMediaStore` gains eight attachment operations, one of them `UpdateAttachmentsAsync` — several
+  changed links saved in one call, which is what reordering a gallery actually is. Custom stores
+  must implement them. A store with nothing better available can loop over
+  `UpdateAttachmentAsync`, but the point of the method is that it need not: the shipped stores do
+  it in one command and, more importantly, one transaction.
 - REST: `PATCH /api/media/{id}` loses `ownerEntityName`, `ownerEntityId` and `clearOwner`;
   `MediaFileResponse` loses the two owner fields and gains `attachments` on the single-file read
   (`null` in listings). `POST /api/media/{id}/attachments`,
@@ -159,6 +163,17 @@ Unrelated to the above:
   `upload.Owner` on the floor, so the call reported success and attached nothing. It was unfixable
   while a row held one owner; the accessor now stores or deduplicates the bytes and then attaches,
   so identical bytes mean one file and two links.
+- Reordering a gallery is one write rather than one per image. `ReorderAsync` renumbered the role
+  by calling the store once per moved file, and a store commits per call, so saving a fifty-image
+  drag cost fifty round trips and fifty transactions — and a failure partway through left the
+  gallery in an order the user never chose and could not describe. It now hands the moved rows to
+  `IMediaStore.UpdateAttachmentsAsync` together: the EF Core store saves them in one batched
+  command inside one transaction, the MongoDB store in one unordered `BulkWrite`, and the Dapper
+  store in one prepared statement executed per row on the connection the application already has
+  — inside its transaction where it has one. Rows already in the right place are still left out,
+  and a reorder into the order a role already has writes nothing at all.
+- `SetAsync` displaces the holders of a single-valued role in one statement instead of one call
+  each, closing the window in which the role held some of its old files and none of its new one.
 - An entity's own listings no longer hand back one page as though it were everything.
   `media.For(entity).ListAsync()`, `ListByRoleAsync`, `ListByCategoryAsync` and
   `ListWithRolesAsync` return a list rather than a page, so they promise every file — but they
