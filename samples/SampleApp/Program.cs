@@ -144,7 +144,7 @@ app.MapPost("/api/products/{id:int}/images", async (
         FileName    = file.FileName,
         ContentType = file.ContentType,
         Category    = "product-images",
-        Role        = role ?? MediaRoles.Gallery
+        Role        = role ?? "gallery"
     }, ct);
 
     return Results.Created($"/api/media/{uploaded.Id}", uploaded.Id);
@@ -164,7 +164,7 @@ app.MapPost("/api/products/{id:int}/images/{mediaId:guid}", async (
     if (product is null)
         return Results.NotFound();
 
-    await media.For(product).AddAsync(mediaId, role ?? MediaRoles.Gallery, ct);
+    await media.For(product).AddAsync(mediaId, role ?? "gallery", ct);
 
     return Results.NoContent();
 });
@@ -186,7 +186,7 @@ app.MapPut("/api/products/{id:int}/images/primary", async (
     if (product is null)
         return Results.NotFound();
 
-    await media.For(product).SetAsync(MediaRoles.Primary, request.MediaFileId, ct);
+    await media.For(product).SetAsync("primary", request.MediaFileId, ct);
 
     return Results.NoContent();
 });
@@ -203,7 +203,7 @@ app.MapPut("/api/products/{id:int}/images/gallery/order", async (
     if (product is null)
         return Results.NotFound();
 
-    await media.For(product).ReorderAsync(MediaRoles.Gallery, request.MediaFileIds, ct);
+    await media.For(product).ReorderAsync("gallery", request.MediaFileIds, ct);
 
     return Results.NoContent();
 });

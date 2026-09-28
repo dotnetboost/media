@@ -170,9 +170,9 @@ public interface IMediaManager
 /// <c>primary</c> would forbid a second gallery shot. So the caller says which it means:
 /// <see cref="SetAsync"/> replaces whatever holds the role, <see cref="AddAsync"/> appends to it.
 /// <code>
-/// await media.For(product).SetAsync(MediaRoles.Primary, heroId, ct);   // replaces the old hero
-/// await media.For(product).AddAsync(shotId, MediaRoles.Gallery, ct);   // appended at the end
-/// await media.For(product).ReorderAsync(MediaRoles.Gallery, ids, ct);
+/// await media.For(product).SetAsync("primary", heroId, ct);   // replaces the old hero
+/// await media.For(product).AddAsync(shotId, "gallery", ct);   // appended at the end
+/// await media.For(product).ReorderAsync("gallery", ids, ct);
 /// </code>
 /// </para>
 /// </summary>

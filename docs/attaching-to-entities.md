@@ -48,9 +48,9 @@ express all three at once — a uniqueness rule that fits `primary` would forbid
 shot — so the caller says which it means:
 
 ```csharp
-await media.For(product).SetAsync(MediaRoles.Primary, heroId, ct);   // replaces the incumbent
-await media.For(product).AddAsync(shotId, MediaRoles.Gallery, ct);   // appended at the end
-await media.For(product).ReorderAsync(MediaRoles.Gallery, ids, ct);  // saves a dragged order
+await media.For(product).SetAsync("primary", heroId, ct);   // replaces the incumbent
+await media.For(product).AddAsync(shotId, "gallery", ct);   // appended at the end
+await media.For(product).ReorderAsync("gallery", ids, ct);  // saves a dragged order
 ```
 
 `SetAsync` detaches whatever held the role and attaches the new file in one operation, which is what
@@ -63,8 +63,8 @@ a double-clicked button and a retried request are both harmless.
 ### Reading them back
 
 ```csharp
-var hero    = await media.For(product).GetByRoleAsync(MediaRoles.Primary, ct);   // one, or null
-var gallery = await media.For(product).ListByRoleAsync(MediaRoles.Gallery, ct);  // in order
+var hero    = await media.For(product).GetByRoleAsync("primary", ct);   // one, or null
+var gallery = await media.For(product).ListByRoleAsync("gallery", ct);  // in order
 ```
 
 To draw a whole product page — hero, ordered gallery, SEO picture — ask once:
@@ -134,13 +134,27 @@ foreach (var role in media.RolesFor("Product"))
 
 ### Roles are free text, lower-cased
 
-`MediaRoles` names the three this library expects to see (`Default`, `Primary`, `Gallery`) but the
-set is open: `hero`, `thumbnail`, `datasheet` are all fine — declared or not. Roles are lower-cased on write, so
-`Primary` and `primary` are one role rather than two — as categories and tags are.
+The library ships **no role names**. `primary`, `gallery`, `seo`, `hero`, `datasheet` — they are all
+just strings, and which ones exist is your application's business. `MediaRoles` holds only the rules
+for writing one down, as `MediaTags` and `MediaCategories` do for theirs.
 
-A role is never null. It defaults to `MediaRoles.Default`, which is what lets the uniqueness
-constraint cover all four columns — a nullable column inside it would behave differently on each
-engine this library supports.
+Keep your names in your own class, next to the entity that uses them, so a typo is a compile error:
+
+```csharp
+public static class ProductRoles
+{
+    public const string Primary = "primary";
+    public const string Gallery = "gallery";
+    public const string Seo     = "seo";
+}
+```
+
+Roles are lower-cased on write, so `Primary` and `primary` are one role rather than two — as
+categories and tags are.
+
+A role is never null. It defaults to `MediaRoles.Default` (`"default"`), which is what lets the
+uniqueness constraint cover all four columns — a nullable column inside it would behave differently
+on each engine this library supports.
 
 ## Category is not role
 

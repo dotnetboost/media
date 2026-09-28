@@ -235,8 +235,8 @@ public class AttachmentTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).AddAsync(file.Id, MediaRoles.Gallery);
-        await harness.Media.For(product).AddAsync(file.Id, MediaRoles.Gallery);
+        await harness.Media.For(product).AddAsync(file.Id, "gallery");
+        await harness.Media.For(product).AddAsync(file.Id, "gallery");
 
         Assert.Single(harness.Store.Attachments);
     }
@@ -248,7 +248,7 @@ public class AttachmentTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
         await harness.Media.For(product).SetAsync("seo", file.Id);
 
         Assert.Equal(2, harness.Store.Attachments.Count);
@@ -337,10 +337,10 @@ public class RoleTests
         var old = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(), "old.png"));
         var new_ = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(32), "new.png"));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, old.Id);
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, new_.Id);
+        await harness.Media.For(product).SetAsync("primary", old.Id);
+        await harness.Media.For(product).SetAsync("primary", new_.Id);
 
-        var primary = await harness.Media.For(product).GetByRoleAsync(MediaRoles.Primary);
+        var primary = await harness.Media.For(product).GetByRoleAsync("primary");
         Assert.Equal(new_.Id, primary?.Id);
     }
 
@@ -353,8 +353,8 @@ public class RoleTests
         var old = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(), "old.png"));
         var new_ = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(32), "new.png"));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, old.Id);
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, new_.Id);
+        await harness.Media.For(product).SetAsync("primary", old.Id);
+        await harness.Media.For(product).SetAsync("primary", new_.Id);
 
         // The displaced file is still in the library, bytes and all — it may well be in use
         // elsewhere, and "stop being the hero image" is not "be deleted".
@@ -369,11 +369,11 @@ public class RoleTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
         var before = Assert.Single(harness.Store.Attachments).Id;
 
         harness.Clock.Advance(TimeSpan.FromHours(1));
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
 
         // The same row, not a removed-and-rewritten one: re-saving the hero image should not move
         // when it was attached.
@@ -385,7 +385,7 @@ public class RoleTests
     {
         var harness = Harness.Create();
 
-        Assert.Null(await harness.Media.For(new Product { Id = 1 }).GetByRoleAsync(MediaRoles.Primary));
+        Assert.Null(await harness.Media.For(new Product { Id = 1 }).GetByRoleAsync("primary"));
     }
 
     [Fact]
@@ -395,12 +395,12 @@ public class RoleTests
         var product = new Product { Id = 1 };
 
         await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(), "a.png", role: MediaRoles.Gallery));
+            TestMedia.Upload(TestMedia.Png(), "a.png", role: "gallery"));
         await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(32), "b.png", role: MediaRoles.Gallery));
+            TestMedia.Upload(TestMedia.Png(32), "b.png", role: "gallery"));
 
         var error = await Assert.ThrowsAsync<InvalidMediaException>(
-            () => harness.Media.For(product).GetByRoleAsync(MediaRoles.Gallery));
+            () => harness.Media.For(product).GetByRoleAsync("gallery"));
 
         Assert.Contains("not a single-valued role", error.Message, StringComparison.Ordinal);
     }
@@ -425,11 +425,11 @@ public class RoleTests
         var product = new Product { Id = 1 };
 
         await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(), "hero.png", role: MediaRoles.Primary));
+            TestMedia.Upload(TestMedia.Png(), "hero.png", role: "primary"));
         await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(32), "shot.png", role: MediaRoles.Gallery));
+            TestMedia.Upload(TestMedia.Png(32), "shot.png", role: "gallery"));
 
-        var gallery = await harness.Media.For(product).ListByRoleAsync(MediaRoles.Gallery);
+        var gallery = await harness.Media.For(product).ListByRoleAsync("gallery");
 
         Assert.Equal("shot.png", Assert.Single(gallery).FileName);
     }
@@ -441,17 +441,17 @@ public class RoleTests
         var product = new Product { Id = 1 };
 
         var hero = await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(), "hero.png", role: MediaRoles.Primary));
+            TestMedia.Upload(TestMedia.Png(), "hero.png", role: "primary"));
         var one  = await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(32), "one.png", role: MediaRoles.Gallery));
+            TestMedia.Upload(TestMedia.Png(32), "one.png", role: "gallery"));
         var two  = await harness.Media.For(product).UploadAsync(
-            TestMedia.Upload(TestMedia.Png(48), "two.png", role: MediaRoles.Gallery));
+            TestMedia.Upload(TestMedia.Png(48), "two.png", role: "gallery"));
 
         var attached = await harness.Media.For(product).ListWithRolesAsync();
 
         // Role order first, then position within the role.
         Assert.Equal(
-            [(one.Id, MediaRoles.Gallery, 0), (two.Id, MediaRoles.Gallery, 1), (hero.Id, MediaRoles.Primary, 0)],
+            [(one.Id, "gallery", 0), (two.Id, "gallery", 1), (hero.Id, "primary", 0)],
             attached.Select(a => (a.File.Id, a.Role, a.SortOrder)));
     }
 
@@ -462,14 +462,14 @@ public class RoleTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
         await harness.Media.For(product).SetAsync("seo", file.Id);
 
         // The question is "what does this entity use, and for what", so one file under two roles is
         // two answers — unlike ListAsync, which asks which files it uses and returns each once.
         var attached = await harness.Media.For(product).ListWithRolesAsync();
 
-        Assert.Equal([MediaRoles.Primary, "seo"], attached.Select(a => a.Role));
+        Assert.Equal(["primary", "seo"], attached.Select(a => a.Role));
         Assert.Single(await harness.Media.For(product).ListAsync());
     }
 
@@ -516,7 +516,7 @@ public class AttachmentOrderTests
         foreach (var name in names)
         {
             var file = await harness.Media.For(product).UploadAsync(
-                TestMedia.Upload(TestMedia.Png(8 + ids.Count), name, role: MediaRoles.Gallery));
+                TestMedia.Upload(TestMedia.Png(8 + ids.Count), name, role: "gallery"));
             ids.Add(file.Id);
         }
 
@@ -531,7 +531,7 @@ public class AttachmentOrderTests
 
         await GalleryOf(harness, product, "a.png", "b.png", "c.png");
 
-        var gallery = await harness.Media.For(product).ListByRoleAsync(MediaRoles.Gallery);
+        var gallery = await harness.Media.For(product).ListByRoleAsync("gallery");
 
         Assert.Equal(["a.png", "b.png", "c.png"], gallery.Select(f => f.FileName));
         Assert.Equal([0, 1, 2], harness.Store.Attachments.OrderBy(a => a.SortOrder).Select(a => a.SortOrder));
@@ -545,9 +545,9 @@ public class AttachmentOrderTests
 
         var ids = await GalleryOf(harness, product, "a.png", "b.png", "c.png");
 
-        await harness.Media.For(product).ReorderAsync(MediaRoles.Gallery, [ids[2], ids[0], ids[1]]);
+        await harness.Media.For(product).ReorderAsync("gallery", [ids[2], ids[0], ids[1]]);
 
-        var gallery = await harness.Media.For(product).ListByRoleAsync(MediaRoles.Gallery);
+        var gallery = await harness.Media.For(product).ListByRoleAsync("gallery");
         Assert.Equal(["c.png", "a.png", "b.png"], gallery.Select(f => f.FileName));
     }
 
@@ -560,7 +560,7 @@ public class AttachmentOrderTests
         var ids = await GalleryOf(harness, product, "a.png", "b.png", "c.png");
 
         var error = await Assert.ThrowsAsync<InvalidMediaException>(
-            () => harness.Media.For(product).ReorderAsync(MediaRoles.Gallery, [ids[0], ids[1]]));
+            () => harness.Media.For(product).ReorderAsync("gallery", [ids[0], ids[1]]));
 
         Assert.Contains("no meaning", error.Message, StringComparison.Ordinal);
     }
@@ -575,7 +575,7 @@ public class AttachmentOrderTests
         var outside = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(48), "z.png"));
 
         await Assert.ThrowsAsync<InvalidMediaException>(
-            () => harness.Media.For(product).ReorderAsync(MediaRoles.Gallery, [ids[0], outside.Id]));
+            () => harness.Media.For(product).ReorderAsync("gallery", [ids[0], outside.Id]));
     }
 
     [Fact]
@@ -586,7 +586,7 @@ public class AttachmentOrderTests
 
         var ids = await GalleryOf(harness, product, "a.png", "b.png", "c.png");
 
-        await harness.Media.For(product).DetachAsync(ids[1], MediaRoles.Gallery);
+        await harness.Media.For(product).DetachAsync(ids[1], "gallery");
         await GalleryOf(harness, product, "d.png");
 
         // The next position comes from the rows, not from a count — which is why removing the
@@ -594,7 +594,7 @@ public class AttachmentOrderTests
         var positions = harness.Store.Attachments.Select(a => a.SortOrder).Order().ToArray();
         Assert.Equal(positions.Distinct(), positions);
 
-        var gallery = await harness.Media.For(product).ListByRoleAsync(MediaRoles.Gallery);
+        var gallery = await harness.Media.For(product).ListByRoleAsync("gallery");
         Assert.Equal(["a.png", "c.png", "d.png"], gallery.Select(f => f.FileName));
     }
 }
@@ -647,11 +647,11 @@ public class DetachAndDeleteTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
         await harness.Media.For(product).SetAsync("seo", file.Id);
 
         await harness.Media.For(product).DetachAsync(file.Id, "seo");
-        Assert.Equal(MediaRoles.Primary, Assert.Single(harness.Store.Attachments).Role);
+        Assert.Equal("primary", Assert.Single(harness.Store.Attachments).Role);
 
         await harness.Media.For(product).DetachAsync(file.Id);
         Assert.Empty(harness.Store.Attachments);
@@ -769,7 +769,7 @@ public class DetachAndDeleteTests
         var product = new Product { Id = 1 };
         var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        await harness.Media.For(product).SetAsync(MediaRoles.Primary, file.Id);
+        await harness.Media.For(product).SetAsync("primary", file.Id);
         await harness.Media.For(product).SetAsync("seo", file.Id);
 
         // One file deleted, not two, though it was attached twice.
@@ -865,17 +865,17 @@ public class AttachmentQueryTests
         var harness = Harness.Create();
 
         await harness.Media.For(new Product { Id = 1 })
-            .UploadAsync(TestMedia.Upload(TestMedia.Png(), "hero.png", role: MediaRoles.Primary));
+            .UploadAsync(TestMedia.Upload(TestMedia.Png(), "hero.png", role: "primary"));
         await harness.Media.For(new Product { Id = 1 })
-            .UploadAsync(TestMedia.Upload(TestMedia.Png(32), "shot.png", role: MediaRoles.Gallery));
+            .UploadAsync(TestMedia.Upload(TestMedia.Png(32), "shot.png", role: "gallery"));
         await harness.Media.For(new Product { Id = 2 })
-            .UploadAsync(TestMedia.Upload(TestMedia.Png(48), "other.png", role: MediaRoles.Primary));
+            .UploadAsync(TestMedia.Upload(TestMedia.Png(48), "other.png", role: "primary"));
 
         var page = await harness.Media.ListAsync(new MediaQuery
         {
             OwnerEntityName = "Product",
             OwnerEntityId   = "1",
-            Role            = MediaRoles.Primary
+            Role            = "primary"
         });
 
         Assert.Equal("hero.png", Assert.Single(page.Items).FileName);
@@ -887,7 +887,7 @@ public class AttachmentQueryTests
         var harness = Harness.Create();
 
         await Assert.ThrowsAsync<InvalidMediaException>(
-            () => harness.Media.ListAsync(new MediaQuery { Role = MediaRoles.Gallery }));
+            () => harness.Media.ListAsync(new MediaQuery { Role = "gallery" }));
     }
 
     [Fact]

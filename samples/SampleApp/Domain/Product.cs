@@ -19,8 +19,8 @@ namespace SampleApp.Domain;
 /// </para>
 /// </summary>
 [MediaEntity("Product")]
-[MediaRole(MediaRoles.Primary)]
-[MediaRole(MediaRoles.Gallery, Multiple = true)]
+[MediaRole("primary")]
+[MediaRole("gallery", Multiple = true)]
 [MediaRole("seo")]
 public class Product
 {

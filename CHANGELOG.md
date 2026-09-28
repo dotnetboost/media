@@ -95,7 +95,12 @@ Unrelated to the above:
 - `IMediaManager.RolesFor(entityName)` and `GET /api/media/roles/{entityName}`, so a UI can offer the
   right roles for whatever it was opened for instead of hard-coding one entity's vocabulary. An
   undeclared entity returns an empty list rather than a 404: it accepts any role.
-- `MediaCategories.Normalize` and `MediaCategories.MaxLength`. The length was a literal `64`
+- `MediaCategories.Normalize` and `MediaCategories.MaxLength`.
+- `MediaRoles` holds only the rules for a role — `Default`, `MaxRoleLength`, `Normalize` — and ships
+  no role names. It briefly had `Primary` and `Gallery` constants; they were two example strings
+  dressed as library concepts, they had no counterpart for `seo`, and neither `MediaTags` nor
+  `MediaCategories` ships example values either. Role names belong in the application's own class,
+  next to the entity, which is also where a typo becomes a compile error. The length was a literal `64`
   repeated in the EF Core mapping and the Dapper DDL while every other column's came from a Core
   constant; both now read it from one place.
 - `MediaAttachment` and `MediaRoles`. A role is what an entity uses a file *for* — `primary`,

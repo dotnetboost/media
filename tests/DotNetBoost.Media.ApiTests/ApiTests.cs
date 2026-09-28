@@ -371,11 +371,11 @@ public class WriteEndpointTests
         var first  = await UploadAsync(app);
         var second = await UploadAsync(app);
 
-        await AttachAsync(app, first.Id, "Product", "1", MediaRoles.Primary, replace: true);
-        await AttachAsync(app, second.Id, "Product", "1", MediaRoles.Primary, replace: true);
+        await AttachAsync(app, first.Id, "Product", "1", "primary", replace: true);
+        await AttachAsync(app, second.Id, "Product", "1", "primary", replace: true);
 
         var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(
-            new Uri($"/api/media?ownerEntityName=Product&ownerEntityId=1&role={MediaRoles.Primary}", UriKind.Relative));
+            new Uri($"/api/media?ownerEntityName=Product&ownerEntityId=1&role=primary", UriKind.Relative));
 
         Assert.Equal(second.Id, Assert.Single(page!.Items).Id);
 
@@ -495,7 +495,7 @@ public class WriteEndpointTests
         var c = await UploadAsync(app, "c.png");
 
         foreach (var file in new[] { a, b, c })
-            await AttachAsync(app, file.Id, "Product", "1", MediaRoles.Gallery);
+            await AttachAsync(app, file.Id, "Product", "1", "gallery");
 
         var response = await app.Client.PutAsJsonAsync(
             new Uri("/api/media/attachments/order", UriKind.Relative),
@@ -503,14 +503,14 @@ public class WriteEndpointTests
             {
                 OwnerEntityName = "Product",
                 OwnerEntityId   = "1",
-                Role            = MediaRoles.Gallery,
+                Role            = "gallery",
                 MediaFileIds    = [c.Id, a.Id, b.Id]
             });
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
 
         var page = await app.Client.GetFromJsonAsync<MediaPageResponse>(new Uri(
-            $"/api/media?ownerEntityName=Product&ownerEntityId=1&role={MediaRoles.Gallery}" +
+            $"/api/media?ownerEntityName=Product&ownerEntityId=1&role=gallery" +
             "&sortBy=sortOrder&descending=false",
             UriKind.Relative));
 
@@ -526,7 +526,7 @@ public class WriteEndpointTests
         var b = await UploadAsync(app, "b.png");
 
         foreach (var file in new[] { a, b })
-            await AttachAsync(app, file.Id, "Product", "1", MediaRoles.Gallery);
+            await AttachAsync(app, file.Id, "Product", "1", "gallery");
 
         var response = await app.Client.PutAsJsonAsync(
             new Uri("/api/media/attachments/order", UriKind.Relative),
@@ -534,7 +534,7 @@ public class WriteEndpointTests
             {
                 OwnerEntityName = "Product",
                 OwnerEntityId   = "1",
-                Role            = MediaRoles.Gallery,
+                Role            = "gallery",
                 MediaFileIds    = [a.Id]
             });
 

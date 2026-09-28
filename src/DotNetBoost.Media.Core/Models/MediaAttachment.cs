@@ -68,22 +68,29 @@ public class MediaAttachment
 }
 
 /// <summary>
-/// The roles an attachment can take, and the rules for writing one down. The set is deliberately
-/// open — an application's roles are its own (<c>hero</c>, <c>thumbnail</c>, <c>datasheet</c>), and
-/// an enum here would force this library's vocabulary onto it.
+/// The rules for writing a role down — as <see cref="MediaTags"/> and
+/// <see cref="MediaCategories"/> are for theirs.
+/// <para>
+/// Deliberately no vocabulary. An application's roles are its own — <c>primary</c>, <c>gallery</c>,
+/// <c>seo</c>, <c>hero</c>, <c>datasheet</c> — and a library shipping constants for two of them
+/// would suggest those two are somehow its concept, when the only opinion it has is about the rules
+/// below. Put your own names in your own class, next to the entity that uses them, and declare them
+/// with <c>[MediaRole]</c>.
+/// </para>
 /// </summary>
 public static class MediaRoles
 {
-    /// <summary>The role an attachment takes when the caller names none.</summary>
+    /// <summary>
+    /// The role an attachment takes when the caller names none.
+    /// <para>
+    /// A sentinel rather than <c>null</c>, which is what lets the uniqueness constraint cover the
+    /// role column: a nullable column inside it rejects the second NULL on SQL Server and allows
+    /// unlimited NULLs on PostgreSQL and SQLite.
+    /// </para>
+    /// </summary>
     public const string Default = "default";
 
-    /// <summary>A product's main image, by convention. Single-valued: attach it with <c>SetAsync</c>.</summary>
-    public const string Primary = "primary";
-
-    /// <summary>The further images behind the primary one, ordered. Multi-valued: use <c>AddAsync</c>.</summary>
-    public const string Gallery = "gallery";
-
-    /// <summary>The longest a role may be.</summary>
+    /// <summary>The longest a role may be, and the width of the column holding it.</summary>
     public const int MaxRoleLength = 64;
 
     /// <summary>
