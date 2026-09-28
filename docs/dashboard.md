@@ -57,10 +57,22 @@ them.
 
 ## Roles in the picker
 
-The picker chooses what the next attach is **for**, with the cardinality in the verb: `gallery`
-appends, `primary` and `seo` replace whatever held the role. The "Attached" badge counts the
-selected role, so an image already in the gallery is still offered as a candidate for primary —
-which is a perfectly reasonable thing to want.
+The picker chooses what the next attach is **for**, and it **asks the entity** rather than assuming:
+`GET api/media/roles/{entityName}` returns what that entity declared, and the selector is built from
+the answer. A product offers `primary / gallery / seo`; an invoice would offer its own.
+
+Whether attaching replaces or appends comes from the same answer — a single-valued role sends
+`replace: true`, a multi-valued one appends — so the hint under the box tells the truth for whatever
+was opened rather than describing a product.
+
+The list opens on a multi-valued role where there is one. Appending is the move that cannot destroy
+anything, and a picker that opened on `primary` would replace the main image on the first click.
+
+An entity that declares nothing comes back with an empty list, and the box becomes free text — which
+is exactly what "not declared" means: any role will do.
+
+The "Attached" badge counts the selected role, so an image already in the gallery is still offered as
+a candidate for primary, which is a perfectly reasonable thing to want.
 
 ## Everything is filtered by the API
 

@@ -82,6 +82,18 @@ export interface MediaUpdate {
 }
 
 /**
+ * One role an entity declares, as `GET api/media/roles/{entityName}` returns it.
+ *
+ * `multiple: false` holds one file, so attaching there sends `replace: true`; `multiple: true`
+ * holds many, in order, and appends. An entity that declares nothing comes back as an empty list
+ * and accepts any role.
+ */
+export interface MediaRole {
+  name: string
+  multiple: boolean
+}
+
+/**
  * Body of `POST api/media/{id}/attachments`.
  *
  * `replace` is what makes a single-valued role single-valued: true takes the role over from

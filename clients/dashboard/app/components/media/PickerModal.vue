@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { MediaFile, MediaPage } from '~/types'
+import type { MediaFile, MediaPage, MediaRole } from '~/types'
 
 /**
  * The media library in a modal, for attaching a file to something.
@@ -34,19 +34,62 @@ const tab = ref<'library' | 'attached'>('library')
  * What the next attach is for. A role belongs to the link rather than to the file, so it is chosen
  * here, when the link is made, and not on the file itself.
  *
- * `primary` and `seo` replace whatever holds them — a product has one main image and one SEO image —
- * while `gallery` appends. That difference cannot live in the schema, because a rule that fits
- * `primary` would forbid a second gallery shot, so the picker states it.
+ * Read from the entity rather than hard-coded, because roles are an entity's own vocabulary: a
+ * product has a primary image and a gallery, an invoice has an original and a signed copy. This
+ * component is opened for whatever the host page is about, so it has to ask.
+ *
+ * An entity that declares nothing comes back empty and accepts any role — then the box is free text
+ * rather than a list, which is exactly what "not declared" means.
  */
-const roles = [
-  { label: 'Gallery', value: 'gallery', replace: false, hint: 'Appended to the end of the gallery.' },
-  { label: 'Primary', value: 'primary', replace: true, hint: 'Becomes the one main image, replacing whatever held that role.' },
-  { label: 'SEO', value: 'seo', replace: true, hint: 'Becomes the one SEO image, replacing whatever held that role.' }
-]
+const declared = ref<MediaRole[]>([])
+const loadingRoles = ref(false)
 
-const role = ref('gallery')
+const role = ref('')
 
-const selectedRole = computed(() => roles.find(r => r.value === role.value) ?? roles[0]!)
+async function loadRoles() {
+  loadingRoles.value = true
+
+  try {
+    declared.value = await $fetch<MediaRole[]>(`/api/media/roles/${encodeURIComponent(props.owner.entityName)}`)
+  } catch {
+    // Not worth blocking the picker over: an entity whose roles cannot be read is treated as one
+    // that declares none, which is the permissive case and still attaches.
+    declared.value = []
+  } finally {
+    loadingRoles.value = false
+  }
+
+  // Prefer a multi-valued role as the starting point. Appending is the move that cannot destroy
+  // anything, and a picker that opened on "primary" would replace the main image on the first
+  // click — a surprising default for a list you are browsing.
+  const preferred = declared.value.find(r => r.multiple) ?? declared.value[0]
+
+  role.value = preferred?.name ?? ''
+}
+
+const roleOptions = computed(() => declared.value.map(r => ({
+  label: r.name,
+  value: r.name
+})))
+
+/**
+ * Whether attaching in the selected role takes it over from whatever held it. A single-valued role
+ * replaces; a multi-valued one appends. An undeclared role is treated as appending, because nothing
+ * says it holds only one.
+ */
+const selectedRole = computed(() => {
+  const found = declared.value.find(r => r.name === role.value)
+
+  return {
+    value: role.value || 'default',
+    replace: found ? !found.multiple : false,
+    hint: found === undefined
+      ? 'This entity declares no roles, so any name will do.'
+      : found.multiple
+        ? 'Appended to the end, in order.'
+        : 'Becomes the one file in this role, replacing whatever held it.'
+  }
+})
 
 const browse = useTemplateRef('browse')
 const attachedBrowser = useTemplateRef('attachedBrowser')
@@ -72,7 +115,7 @@ async function loadAttached() {
       query: {
         ownerEntityName: props.owner.entityName,
         ownerEntityId: props.owner.entityId,
-        role: role.value,
+        role: selectedRole.value.value,
         take: 500
       }
     })
@@ -89,11 +132,14 @@ async function loadAttached() {
 // The badge means "already in this role", so changing the role changes which files carry it.
 watch(role, () => loadAttached())
 
+// The roles belong to the entity, so a picker reopened for a different one asks again.
+watch(() => props.owner.entityName, () => loadRoles(), { immediate: true })
+
 watch(() => props.version, () => reloadAll())
 
 const tabs = computed(() => [
   { label: 'All files', value: 'library', icon: 'i-lucide-images' },
-  { label: `As ${role.value} (${attachedIds.value.length})`, value: 'attached', icon: 'i-lucide-link' }
+  { label: `As ${selectedRole.value.value} (${attachedIds.value.length})`, value: 'attached', icon: 'i-lucide-link' }
 ])
 
 /** Both tabs show the same rows from different angles, so a change in one has to reach the other. */
@@ -146,12 +192,26 @@ onMounted(() => {
             :description="selectedRole.hint"
             :ui="{ description: 'text-xs' }"
           >
+            <USkeleton v-if="loadingRoles" class="h-8 w-40" />
+
             <USelect
+              v-else-if="roleOptions.length"
               v-model="role"
-              :items="roles"
+              :items="roleOptions"
               value-key="value"
               size="sm"
               class="w-40"
+            />
+
+            <!-- Nothing declared, so nothing to choose from: the entity takes any role, and the
+                 honest control for that is a box you type in. -->
+            <UInput
+              v-else
+              v-model="role"
+              placeholder="default"
+              size="sm"
+              class="w-40"
+              @blur="loadAttached"
             />
           </UFormField>
         </div>
@@ -164,7 +224,7 @@ onMounted(() => {
           compact
           :attached-ids="attachedIds"
           :upload-owner="owner"
-          :upload-role="role"
+          :upload-role="selectedRole.value"
           :page-size="9"
           @select="onAttach"
           @changed="reloadAll"
@@ -175,9 +235,9 @@ onMounted(() => {
           ref="attachedBrowser"
           compact
           :owner="owner"
-          :role="role"
+          :role="selectedRole.value"
           :upload-owner="owner"
-          :upload-role="role"
+          :upload-role="selectedRole.value"
           :page-size="9"
           @changed="reloadAll"
         />

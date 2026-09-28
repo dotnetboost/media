@@ -67,7 +67,10 @@ Unrelated to the above:
   without deleting it.
 - `clients/dashboard` shows every entity using a file rather than one owner, warns on delete how
   many lose it, groups a product's media by role with make-primary and reordering, and offers
-  "remove from product" as distinct from deleting the file.
+  "remove from product" as distinct from deleting the file. Its picker reads the roles from
+  `GET api/media/roles/{entityName}` instead of hard-coding one entity's vocabulary, takes
+  replace-or-append from the declared cardinality, and falls back to a free-text box for an entity
+  that declares nothing.
 
 ### Added
 
