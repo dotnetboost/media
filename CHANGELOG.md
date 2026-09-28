@@ -7,24 +7,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Changed — **breaking**: one file can now belong to several entities
+## [1.0.0-preview.1] - 2026-09-28
 
-A media row carried its own `OwnerEntityName` and `OwnerEntityId` — one slot, one owner — so
-attaching a file to a second entity overwrote the first and the file silently left it. The link
-moves to a row of its own.
+First public release. Nothing before it was published, so all of it is new — including the two
+sections that read as changes and fixes. Those record decisions taken while the library was being
+built, kept because the reasoning still explains why the API looks the way it does, and because a
+decision is easier to revisit when the alternative it rejected is written down.
 
-`MediaFile` loses both owner columns. `MediaAttachment` gains
+### One file can belong to several entities
+
+An earlier design during development gave a media row its own `OwnerEntityName` and
+`OwnerEntityId` — one slot, one owner — so attaching a file to a second entity overwrote the first
+and the file silently left it. The link lives in a row of its own instead.
+
+`MediaFile` therefore has no owner columns. `MediaAttachment` holds
 `(MediaFileId, OwnerEntityName, OwnerEntityId, Role, SortOrder)`, unique on all but the position.
-One extra table in total: adding media to a new entity type still costs no schema change.
+Two tables in total: adding media to a new entity type still costs no schema change.
 
-**Migrating.** `1.0.0-preview.1` is untagged and no automatic backfill ships. If you ran the
-preview, create the new table (`DapperSchema.EnsureCreatedAsync`, `ApplyMedia`, or
-`MongoMediaIndexes.EnsureCreatedAsync`) and insert one attachment per row that had an owner, with
-`Role = 'default'` and `SortOrder = 0`, then drop the two owner columns. **EF Core consumers need a
-new migration**: the model gained an entity type and lost two properties.
+**Nothing to migrate.** This is the first published version, so the schema it creates is the first
+one — `DapperSchema.EnsureCreatedAsync`, `ApplyMedia` or `MongoMediaIndexes.EnsureCreatedAsync`
+builds both tables, and an EF Core consumer generates one initial migration.
+
+What that settled, against the one-owner design it replaced:
 
 - `MediaFile.OwnerEntityName` / `OwnerEntityId`, `MediaFileInfo.OwnerEntityName` / `OwnerEntityId`,
-  `MediaUpload.Owner`, and `MediaUpdate.Owner` / `ClearOwner` are removed.
+  `MediaUpload.Owner`, and `MediaUpdate.Owner` / `ClearOwner` do not exist.
 - `IMediaAccessor.AttachAsync(id)` is replaced by `AddAsync(id, role)` and `SetAsync(role, id)`.
   `AddAsync` appends within a role and is idempotent; `SetAsync` takes a single-valued role over
   from whatever held it, in one operation rather than two with a window in between. No schema can
@@ -149,7 +156,10 @@ Unrelated to the above:
   **Products** page whose attach button opens that same browser in a modal. The Aspire AppHost
   starts it alongside the API.
 
-### Fixed
+### Fixed before release
+
+Behaviour corrected while the library was being built. Listed because each one is a trap the
+design walked into and climbed out of, not because a released version ever shipped it.
 
 - `samples/SampleApp` answers a malformed JSON body with `400` in Development as well as in
   Production. `UseExceptionHandler()` rethrows what no handler claims, and the developer exception
@@ -243,11 +253,9 @@ Unrelated to the above:
   too; on SQL Server and SQLite, whose transactions survive a constraint violation, it looks the
   row up rather than reference those providers' packages for an error code.
 
-## [1.0.0-preview.1]
+### The surface, by package
 
-First public preview. Everything below is new.
-
-### Core — `DotNetBoost.Media.Core`
+#### Core — `DotNetBoost.Media.Core`
 
 - `IMediaManager`: upload, find, read, link, update, delete and list, plus `For(entity)` for media
   attached to one of your own entities.
@@ -268,7 +276,7 @@ First public preview. Everything below is new.
 - `MediaBuilder`: `services.AddMedia().Use…().Build()`, with a startup probe of every configured
   storage backend.
 
-### Metadata stores
+#### Metadata stores
 
 - `DotNetBoost.Media.EntityFrameworkCore` — the table in your own `DbContext`, so a file and its
   entity commit in one transaction. `modelBuilder.ApplyMedia()`.
@@ -276,7 +284,7 @@ First public preview. Everything below is new.
   SQL Server, PostgreSQL and SQLite, and transaction enlistment.
 - `DotNetBoost.Media.MongoDb` — the rows as documents in one collection, keyed by the file's id.
 
-### Storage backends
+#### Storage backends
 
 - `DotNetBoost.Media.FileSystem` — local disk, with containment proved against the resolved root,
   empty-directory pruning, optional public URLs, and a startup writability probe.
@@ -289,7 +297,7 @@ First public preview. Everything below is new.
 Several backends can be registered at once, and each row records the one that wrote it — so
 changing which backend receives new uploads does not strand the files that came before.
 
-### ASP.NET Core — `DotNetBoost.Media.API`
+#### ASP.NET Core — `DotNetBoost.Media.API`
 
 - `MapMediaEndpoints()`: upload (multipart), list with filters and paging, metadata, download with
   Range and ETag support, direct URL, patch and delete.
@@ -300,3 +308,4 @@ changing which backend receives new uploads does not strand the files that came 
 
 [Unreleased]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.1...HEAD
 [1.0.0-preview.1]: https://github.com/dotnetboost/media/releases/tag/v1.0.0-preview.1
+
