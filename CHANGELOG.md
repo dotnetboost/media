@@ -174,6 +174,9 @@ Unrelated to the above:
   and a reorder into the order a role already has writes nothing at all.
 - `SetAsync` displaces the holders of a single-valued role in one statement instead of one call
   each, closing the window in which the role held some of its old files and none of its new one.
+- `MeasuringStream` is disposed, so the `IncrementalHash` behind every upload's SHA-256 is
+  released when the upload finishes rather than whenever the finalizer queue gets to it. The class
+  had a `Dispose` override that nothing ever called.
 - An entity's own listings no longer hand back one page as though it were everything.
   `media.For(entity).ListAsync()`, `ListByRoleAsync`, `ListByCategoryAsync` and
   `ListWithRolesAsync` return a list rather than a page, so they promise every file — but they

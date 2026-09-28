@@ -57,7 +57,10 @@ internal sealed partial class MediaManager(
         var id   = Guid.NewGuid();
         var path = MediaPaths.Validate(keyGenerator.Generate(id, fileName, category));
 
-        var measured = new MeasuringStream(body, options.MaxFileSizeBytes, options.ComputeChecksum);
+        // Disposed at the end of the method, which is after the checksum is read below — the hash
+        // cannot be finished once it has been released. Only the hash is freed here: the stream
+        // underneath is the request body and belongs to whoever opened it.
+        using var measured = new MeasuringStream(body, options.MaxFileSizeBytes, options.ComputeChecksum);
 
         StoredObject stored;
         try
