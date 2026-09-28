@@ -216,6 +216,69 @@ public class ReadEndpointTests
         Assert.Equal("holiday.png", attachment.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
     }
 
+    /// <summary>
+    /// The stored type was verified against the file's own bytes, so letting a browser sniff its
+    /// way to a different one can only make it wrong — and the interesting way it goes wrong is a
+    /// file served as something inert being executed as something that is not.
+    /// </summary>
+    [Fact]
+    public async Task Content_is_always_served_with_nosniff()
+    {
+        await using var app = await TestApp.StartAsync();
+        var uploaded = await UploadAsync(app, TestMedia.Png());
+
+        var response = await app.Client.GetAsync(new Uri($"/api/media/{uploaded.Id}/content", UriKind.Relative));
+
+        Assert.Equal("nosniff", Assert.Single(response.Headers.GetValues("X-Content-Type-Options")));
+    }
+
+    /// <summary>
+    /// The stored-XSS case. Nothing stops an HTML file being uploaded — it is a perfectly ordinary
+    /// thing to keep — but serving one inline from the application's own origin would run its
+    /// script there, with the session of whoever opened the link.
+    /// </summary>
+    [Theory]
+    [InlineData("page.html", "text/html")]
+    [InlineData("logo.svg", "image/svg+xml")]
+    [InlineData("feed.xml", "application/xml")]
+    public async Task Content_that_runs_script_is_never_served_inline(string fileName, string contentType)
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var upload = await app.Client.PostAsync(
+            new Uri("/api/media", UriKind.Relative),
+            TestApp.Multipart(Encoding.UTF8.GetBytes("<x>hello</x>"), fileName, contentType));
+
+        upload.EnsureSuccessStatusCode();
+        var uploaded = (await upload.Content.ReadFromJsonAsync<MediaFileResponse>())!;
+
+        var response = await app.Client.GetAsync(new Uri($"/api/media/{uploaded.Id}/content", UriKind.Relative));
+
+        Assert.Equal("attachment", response.Content.Headers.ContentDisposition?.DispositionType);
+        Assert.Equal(fileName, response.Content.Headers.ContentDisposition?.FileName?.Trim('"'));
+        Assert.Equal("sandbox", Assert.Single(response.Headers.GetValues("Content-Security-Policy")));
+
+        // The bytes still come back. This is about how a browser is told to treat them, not about
+        // refusing to store or serve the file.
+        Assert.Equal("<x>hello</x>", await response.Content.ReadAsStringAsync());
+    }
+
+    /// <summary>
+    /// And the sandbox does not spread to everything else: an image has to stay inline, or every
+    /// &lt;img&gt; pointed at this endpoint breaks.
+    /// </summary>
+    [Fact]
+    public async Task Ordinary_content_is_not_sandboxed()
+    {
+        await using var app = await TestApp.StartAsync();
+        var uploaded = await UploadAsync(app, TestMedia.Png());
+
+        var response = await app.Client.GetAsync(new Uri($"/api/media/{uploaded.Id}/content", UriKind.Relative));
+
+        Assert.Null(response.Content.Headers.ContentDisposition);
+        Assert.False(response.Headers.Contains("Content-Security-Policy"));
+    }
+
     [Fact]
     public async Task Content_serves_a_range()
     {

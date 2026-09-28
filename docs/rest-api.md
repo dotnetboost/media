@@ -125,6 +125,26 @@ the file is served inline, which is what an `<img>` wants.
 
 `404` when the file is not there, and also when the row is there but its bytes are not.
 
+### What the response always carries
+
+- **`X-Content-Type-Options: nosniff`**, on every response. The stored type was verified against
+  the file's own leading bytes, so a browser sniffing its way to a different one can only make it
+  wrong.
+- **`Content-Disposition: attachment` and `Content-Security-Policy: sandbox`** for the types a
+  browser runs script from when it renders one as a page: `text/html`,
+  `application/xhtml+xml`, `image/svg+xml`, `text/xml`, `application/xml`, `text/xsl`, and the two
+  JavaScript types. `?download=true` is ignored for these — they are never served inline, because
+  inline means *in your origin, with the session of whoever opened the link*.
+
+  This does not stop an `<img src>` or a `<video>` from rendering the file: browsers honour
+  `Content-Disposition` for navigations, not for embedded resources, so a stored SVG logo still
+  draws where a page asks for it. What it stops is the file being opened as a document of its own.
+
+  There is no switch for it. An application that genuinely means to serve user HTML inline should
+  do it from a **separate origin** over its own route on `IMediaManager`, which is the only version
+  of that idea that is actually safe. `MediaContentTypes.IsActiveContent` is public so such a route
+  can ask the same question.
+
 ## GET /api/media/{id}/url
 
 ```json

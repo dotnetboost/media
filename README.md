@@ -296,6 +296,13 @@ cannot pick where a file lands, collide with another, or aim at a directory. Eve
 re-validated on the way back out of the database, and the local backend proves containment against
 the resolved root as well.
 
+**A stored file cannot script your origin.** Downloads always carry
+`X-Content-Type-Options: nosniff`, and the types a browser runs script from — HTML, SVG, XML,
+JavaScript — are served as attachments and sandboxed rather than inline, whatever `?download`
+says. Embedding still works: `Content-Disposition` governs navigations, not `<img>`, so a stored
+SVG logo draws where a page asks for it. Serving user uploads from a separate origin is still
+stronger, and `GET /api/media/{id}/url` already does.
+
 ---
 
 ## Documentation

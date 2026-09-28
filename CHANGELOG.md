@@ -175,6 +175,24 @@ Unrelated to the above:
   `IMediaStorageProvider.OpenReadAsync` now documents seekability as part of the contract, and
   [adding-a-backend.md](docs/adding-a-backend.md) explains how to satisfy it over a forward-only
   SDK.
+- `GET /api/media/{id}/content` no longer serves script-bearing uploads inline. Nothing blocks an
+  HTML or SVG upload — both are ordinary things to store — but the endpoint served them back with
+  their stored type, inline, from the application's own origin, which is a stored-XSS vector:
+  open the link and the file's script runs in your origin with your session cookie. The
+  `.js` extension was blocked while `.html` and `.svg` were not, and the security guide told the
+  reader to add the missing headers themselves, which sits badly beside a library whose defaults
+  are meant to be the safe ones.
+
+  Every download now carries `X-Content-Type-Options: nosniff`, and the types a browser runs
+  script from as a top-level document — `text/html`, `application/xhtml+xml`, `image/svg+xml`,
+  `text/xml`, `application/xml`, `text/xsl`, `text/javascript`, `application/javascript` — are
+  served as `Content-Disposition: attachment` with `Content-Security-Policy: sandbox`, whatever
+  `?download` says. Embedding is unaffected, since browsers honour `Content-Disposition` for
+  navigations and not for `<img>` or `<video>`: a stored SVG logo still draws where a page asks
+  for it. There is no opt-out, for the same reason the Azure backend's containers are private
+  with no switch; an application that means to serve user HTML inline should do it from a separate
+  origin over its own route, and `MediaContentTypes.IsActiveContent` is public so that route can
+  ask the same question.
 - `AmazonS3StorageProvider.GetUrlAsync` pre-signs on the scheme its client's `ServiceURL` uses.
   The AWS SDK pre-signs over HTTPS regardless of how the client is configured, so a provider
   pointed at an S3-compatible endpoint served over plain HTTP — an on-prem gateway, a local proxy,

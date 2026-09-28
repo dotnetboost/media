@@ -146,16 +146,32 @@ checks in them.
 
 ## Serving stored files safely
 
-Two rules for anything user-supplied:
+`GET /api/media/{id}/content` does three things about this, and none of them is configurable.
 
-- **Serve from a different origin** than your application, or with
-  `Content-Security-Policy: sandbox`. An HTML or SVG file served from your own origin runs script
-  in your origin.
-- **Send `X-Content-Type-Options: nosniff`.** Without it a browser may sniff the content and
-  execute something you served as `text/plain`.
+- **`X-Content-Type-Options: nosniff` on every response.** The stored type was already verified
+  against the file's own leading bytes, so a browser sniffing its way to a different one can only
+  make it wrong.
+- **The types that run script are never served inline.** `text/html`, `application/xhtml+xml`,
+  `image/svg+xml`, `text/xml`, `application/xml`, `text/xsl` and the JavaScript types come back as
+  `Content-Disposition: attachment`, whatever `?download` says.
+- **`Content-Security-Policy: sandbox` on those same responses**, for whatever opens one anyway.
 
-`MapMediaEndpoints()` serves the stored content type, which has been verified against the bytes.
-That is a useful part of the answer and not all of it.
+SVG is the one that surprises people: it is an XML document that may carry a `<script>`, not
+merely a picture. Uploading one is fine and it is still stored — this is about how a browser is
+told to treat the bytes, not about refusing them. Nor does it break embedding: browsers honour
+`Content-Disposition` for navigations, not for `<img>` or `<video>`, so a stored SVG logo draws
+exactly where a page asks for it. What it stops is the file being opened as a document in its own
+right, in your origin, with the session cookie of whoever followed the link.
+
+`MediaContentTypes.IsActiveContent(contentType)` is public, so a route of your own can ask the same
+question rather than keep a list that goes stale.
+
+**What is still yours.** Serving user uploads from a **separate origin** is stronger than any
+header, because it moves them out of your origin entirely rather than defending the boundary from
+inside it. It is the right answer if you accept files from the public, and the only safe way to
+serve user HTML inline — put your own route over `IMediaManager` on that origin. `GET
+/api/media/{id}/url` already hands out links on the storage account's own host, which is a
+different origin by construction.
 
 ## Storage account posture
 

@@ -241,6 +241,14 @@ namespace Microsoft.Extensions.DependencyInjection
         /// serves every uploaded file to anyone holding — or guessing at — an id. Secure them
         /// before production.
         /// </para>
+        /// <para>
+        /// What the download does defend, without being asked: every response carries
+        /// <c>X-Content-Type-Options: nosniff</c>, and the types a browser runs script from as a
+        /// page of its own — HTML, XHTML, SVG, XML, JavaScript — are served as attachments and
+        /// sandboxed rather than inline, so an uploaded file cannot script this application's
+        /// origin. Embedding is unaffected. Neither is configurable; see
+        /// <see cref="MediaContentTypes.IsActiveContent"/> and docs/validation-and-security.md.
+        /// </para>
         /// </summary>
         public static RouteGroupBuilder MapMediaEndpoints(this IEndpointRouteBuilder endpoints, string prefix = "/api/media")
         {
@@ -413,20 +421,46 @@ namespace Microsoft.Extensions.DependencyInjection
         private static async Task<IResult> DownloadAsync(
             Guid id,
             IMediaManager media,
+            HttpResponse response,
             CancellationToken ct,
             bool download = false)
         {
+            ArgumentNullException.ThrowIfNull(response);
+
             var content = await media.OpenReadAsync(id, ct);
+
+            // Never let a browser second-guess the stored type. It was verified against the file's
+            // own leading bytes on the way in, so sniffing can only make it wrong — and the way it
+            // goes wrong is a file served as something harmless being executed as something that
+            // is not. One header, no downside, so it is not configurable.
+            response.Headers.XContentTypeOptions = "nosniff";
+
+            // HTML, SVG and the rest run script when a browser renders them as a page, and a page
+            // served from this application's origin is inside this application's origin — session
+            // cookies and all. So they are sent as downloads rather than inline, and sandboxed on
+            // top of that in case something opens one anyway. Embedded uses are unaffected:
+            // Content-Disposition governs navigations, not <img> or <video>, so a stored SVG still
+            // draws where a page asks for it.
+            //
+            // An application that genuinely means to serve user HTML inline should do it from a
+            // separate origin, over its own route on IMediaManager — the same answer this library
+            // gives for per-file authorization, and for the same reason: it is a decision about
+            // the application, not about the file.
+            var active = MediaContentTypes.IsActiveContent(content.ContentType);
+
+            if (active)
+                response.Headers.ContentSecurityPolicy = "sandbox";
 
             // TypedResults.Stream disposes the stream once the response is written, so the handle
             // this opened is released whether the client reads it all or hangs up halfway.
             return TypedResults.Stream(
                 content.Stream,
                 contentType: content.ContentType,
-                // A name only when asked for: with one, ASP.NET Core sets Content-Disposition to
+                // A name only when asked for — with one, ASP.NET Core sets Content-Disposition to
                 // "attachment" and the browser downloads rather than displays, which is wrong for
-                // an <img> and right for a link.
-                fileDownloadName: download ? content.FileName : null,
+                // an <img> and right for a link — or always, for the types above, where inline is
+                // not an option worth offering.
+                fileDownloadName: download || active ? content.FileName : null,
                 lastModified: content.File.UpdatedAt ?? content.File.CreatedAt,
                 // The checksum is a hash of the content, which is exactly what a strong ETag is
                 // for. It makes conditional requests work, and the video and audio seeking that

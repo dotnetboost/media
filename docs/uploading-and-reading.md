@@ -74,6 +74,12 @@ only when the stream can report a length and seek. A custom backend need not be 
 `CanSeek` if you support one. `content.File.Size` is the length either way, and is the number to
 trust: it was measured while the bytes were written.
 
+Serving user uploads from your own route puts them in your own origin, so do what
+`MapMediaEndpoints()` does: send `X-Content-Type-Options: nosniff`, and never serve
+`MediaContentTypes.IsActiveContent(content.ContentType)` inline — HTML and SVG run script.
+[validation-and-security.md](validation-and-security.md#serving-stored-files-safely) has the
+details.
+
 ## Handing out a direct link
 
 ```csharp
