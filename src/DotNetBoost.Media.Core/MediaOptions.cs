@@ -75,7 +75,7 @@ public sealed class MediaOptions
     /// second copy. Default: <c>false</c>.
     /// <para>
     /// It is off by default because the saving is not free: the returned row carries the FIRST
-    /// upload's name, category, owner and uploader, so two callers who "uploaded" a file share
+    /// upload's name, category and uploader, so two callers who "uploaded" a file share
     /// one row and one lifetime — deleting it deletes it for both. Turn it on where the files are
     /// genuinely interchangeable (content-addressed assets), not where they are somebody's
     /// document.
