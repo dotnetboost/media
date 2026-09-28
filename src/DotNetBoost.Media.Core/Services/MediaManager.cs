@@ -74,7 +74,7 @@ internal sealed partial class MediaManager(
             // A size overrun surfaces from inside the backend's own read, so it arrives wrapped in
             // whatever that backend throws. The caller asked to upload a file and wants to hear
             // that it was too large, not that an HTTP PUT failed.
-            await TryRemoveAsync(provider, provider.Container, path, id: null, ct).ConfigureAwait(false);
+            await TryRemoveAsync(provider, provider.Container, path, id: null).ConfigureAwait(false);
             throw known;
         }
 
@@ -90,7 +90,7 @@ internal sealed partial class MediaManager(
             {
                 // Identical bytes are already stored. Drop the copy just written — not the
                 // existing object, which is the one every row points at.
-                await TryRemoveAsync(provider, stored.Container, stored.Path, id: null, ct).ConfigureAwait(false);
+                await TryRemoveAsync(provider, stored.Container, stored.Path, id: null).ConfigureAwait(false);
                 LogDeduplicated(fileName, existing.Id);
                 return MediaFileInfo.From(existing);
             }
@@ -122,7 +122,7 @@ internal sealed partial class MediaManager(
             // The bytes are written but the row is not, so nothing can ever find them. Remove
             // them rather than leave an object no part of the system knows about. Best-effort:
             // the original failure is what the caller needs to hear about.
-            await TryRemoveAsync(provider, stored.Container, stored.Path, id, ct).ConfigureAwait(false);
+            await TryRemoveAsync(provider, stored.Container, stored.Path, id).ConfigureAwait(false);
             throw;
         }
 
@@ -348,7 +348,7 @@ internal sealed partial class MediaManager(
 
         if (provider is not null)
         {
-            await TryRemoveAsync(provider, file.StorageContainer, MediaPaths.Validate(file.StoragePath), file.Id, ct)
+            await TryRemoveAsync(provider, file.StorageContainer, MediaPaths.Validate(file.StoragePath), file.Id)
                 .ConfigureAwait(false);
         }
         else
@@ -380,18 +380,22 @@ internal sealed partial class MediaManager(
     /// Removes an object, swallowing whatever the backend says about it. Used on the cleanup paths
     /// only, where something has already gone wrong and the caller is owed the original failure —
     /// the leftover object is logged so it can be collected later.
+    /// <para>
+    /// It takes no <see cref="CancellationToken"/>, and that is the point rather than an oversight:
+    /// the usual reason to be here is an upload whose request was cancelled part-way, and removing
+    /// the bytes it already wrote is exactly the work that still has to happen once the caller has
+    /// gone. Taking a token and passing <see cref="CancellationToken.None"/> anyway would only
+    /// invite someone to wire it through.
+    /// </para>
     /// </summary>
     private async Task TryRemoveAsync(
         IMediaStorageProvider provider,
         string container,
         string path,
-        Guid? id,
-        CancellationToken ct)
+        Guid? id)
     {
         try
         {
-            // CancellationToken.None, deliberately: the usual reason to be here is a cancelled
-            // request, and cleaning up is exactly what must still happen when the caller has gone.
             await provider.DeleteAsync(container, path, CancellationToken.None).ConfigureAwait(false);
         }
 #pragma warning disable CA1031 // Cleanup must not replace the failure that brought us here.
@@ -400,8 +404,6 @@ internal sealed partial class MediaManager(
         {
             LogOrphanedContent(ex, provider.Name, container, path, id);
         }
-
-        _ = ct;
     }
 
     /// <summary>
