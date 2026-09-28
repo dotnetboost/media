@@ -1,7 +1,7 @@
 namespace DotNetBoost.Media.Dapper;
 
 /// <summary>
-/// Table naming for the one table this store reads and writes. The defaults match
+/// Table naming for the two tables this store reads and writes. The defaults match
 /// <c>MediaModelOptions</c> in the EF Core store, so the same database serves both. Configured
 /// through the <c>configure</c> argument of <c>UseDapper(...)</c>.
 /// </summary>
@@ -9,6 +9,16 @@ public sealed class DapperOptions
 {
     /// <summary>Table holding the media rows. Default: <c>MediaFiles</c>.</summary>
     public string MediaFilesTable { get; set; } = "MediaFiles";
+
+    /// <summary>
+    /// Table holding the links between files and the entities using them. Default:
+    /// <c>MediaAttachments</c>.
+    /// <para>
+    /// Two tables in total, whatever the application attaches media to — which is what lets one
+    /// file belong to several entities and still costs no migration per entity type.
+    /// </para>
+    /// </summary>
+    public string MediaAttachmentsTable { get; set; } = "MediaAttachments";
 
     /// <summary>
     /// Schema for the table, or <c>null</c> for the connection's default. SQLite has no schemas;

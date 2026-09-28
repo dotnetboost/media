@@ -88,8 +88,13 @@ public sealed class MediaOptions
     /// Whether a deleted file keeps its row, with <c>DeletedAt</c> set. Default: <c>true</c>.
     /// <para>
     /// The bytes go either way. What soft delete keeps is the record that the file existed — its
-    /// name, size, owner and who uploaded it — which is usually what an audit or a support
-    /// question needs. It is not a recycle bin.
+    /// name, size and who uploaded it — which is usually what an audit or a support question
+    /// needs. It is not a recycle bin.
+    /// </para>
+    /// <para>
+    /// It does not keep the file's attachments. Those are removed outright either way: a
+    /// soft-deleted file that still read as attached to a live entity would be worse than no record
+    /// at all.
     /// </para>
     /// </summary>
     public bool SoftDelete { get; set; } = true;

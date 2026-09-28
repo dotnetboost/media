@@ -104,6 +104,8 @@ public sealed class MediaTestContext(DbContextOptions<MediaTestContext> options)
 {
     public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
 
+    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
+
     public DbSet<Product> Products => Set<Product>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

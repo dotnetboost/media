@@ -68,6 +68,18 @@ rather than buffering — that is the whole point of it being a stream.
 If the row exists but its bytes do not, this throws `MediaContentMissingException` rather than
 returning an empty stream. The API package answers that with a 404.
 
+The stream is seekable on all three shipped backends, which is what lets you pass
+`enableRangeProcessing: true` and have it mean something — ASP.NET Core serves a partial response
+only when the stream can report a length and seek. A custom backend need not be seekable, so check
+`CanSeek` if you support one. `content.File.Size` is the length either way, and is the number to
+trust: it was measured while the bytes were written.
+
+Serving user uploads from your own route puts them in your own origin, so do what
+`MapMediaEndpoints()` does: send `X-Content-Type-Options: nosniff`, and never serve
+`MediaContentTypes.IsActiveContent(content.ContentType)` inline — HTML and SVG run script.
+[validation-and-security.md](validation-and-security.md#serving-stored-files-safely) has the
+details.
+
 ## Handing out a direct link
 
 ```csharp

@@ -21,13 +21,16 @@ row rolls back with everything else. The bytes do not — same sweep.
 
 ## Deleting an entity does not delete its files
 
-There is no foreign key from a media row to your table, which is exactly what lets one table serve
-every entity in the application. Nothing cascades.
+There is no foreign key from an attachment row to your table, which is exactly what lets two tables
+serve every entity in the application. Nothing cascades.
 
 ```csharp
 await media.For(product).DeleteAllAsync(ct);
 db.Products.Remove(product);
 ```
+
+`DeleteAllAsync` deletes the files that entity alone was using and merely detaches the ones others
+still reference — deleting one product must not pull a shared image out of the rest.
 
 Put it in one place if you would rather not remember it — a `SaveChanges` interceptor, or a
 repository base class.
@@ -100,8 +103,9 @@ trigram index on the column, or your own tag table.
 
 ## No built-in per-file authorization
 
-The library records `OwnerEntityName`, `OwnerEntityId` and `UploadedBy` so you can decide who may
-see what. It does not decide.
+The library records who uploaded a file and which entities are attached to it, so you can decide who
+may see what. It does not decide — and note that a file may be attached to several entities, so
+"may this user see this file" is a question about all of them, not one.
 
 `MapMediaEndpoints()` maps anonymous endpoints; `RequireAuthorization()` gets you "signed in".
 Anything finer is your own route over `IMediaManager`. See
@@ -109,7 +113,7 @@ Anything finer is your own route over `IMediaManager`. See
 
 ## Composite entity keys need a decision
 
-A media row records one key. For a composite primary key, either compose the value yourself and
+An attachment row records one key. For a composite primary key, either compose the value yourself and
 use `For(name, key)`, or register an `IEntityKeyAccessor` that does it consistently. The EF Core
 key accessor detects a composite key and says so rather than silently using the first column.
 
@@ -120,9 +124,58 @@ durable volume; use Azure or S3 behind a load balancer.
 
 ## Soft delete is not a recycle bin
 
-The bytes go either way. The row is the record that the file existed — its name, size, owner and
-uploader — not a way to get it back. If you need undelete, do not delete: move the row to an
-`archived` category and sweep it later.
+The bytes go either way. The row is the record that the file existed — its name, size and uploader —
+not a way to get it back. Its attachments are **not** kept: they are links with no independent
+value, and a tombstoned file that still read as attached to a live entity would be worse than no
+record at all. If you need undelete, do not delete: move the row to an `archived` category and sweep
+it later.
+
+## Deleting an entity's sole-held files is not atomic
+
+`DeleteAllAsync` asks which of an entity's files nobody else holds, then deletes those. Between the
+two, another request could attach one of them, leaving that new link pointing at bytes that are
+gone.
+
+Closing the window needs a lock this library does not take anywhere: the Dapper store borrows your
+connection and may already be inside your transaction, and MongoDB's sessions are not handed out
+through DI. The window is small, `OpenReadAsync` reports the outcome honestly as
+`MediaContentMissingException`, and it is the same trade the engine already makes writing bytes
+before rows.
+
+If it matters for your data, do the delete when the entity is already unreachable — which is
+normally exactly when you call it.
+
+## A file's attachments have no metadata of their own
+
+An attachment carries an owner, a role and a position, and nothing else. Per-link alt text, a
+caption, or a "visible from" date belong in your own table keyed by the media id and your entity —
+adding them here would make every application pay for one application's field.
+
+## An entity's own listings are one page, or an error
+
+`media.For(entity).ListAsync()` and its siblings return a list, not a page, so they promise every
+file attached to that entity. A query returns at most 500 rows, so an entity holding more than that
+is refused with an `InvalidMediaException` rather than answered with the first 500 — a truncated
+list is indistinguishable from a complete one, and nothing about the result would tell the caller
+that the rest exist.
+
+Page it with the query API, which was always the paged one:
+
+```csharp
+var page = await media.ListAsync(new MediaQuery
+{
+    OwnerEntityName = "Product",
+    OwnerEntityId   = id.ToString(),
+    Role            = "gallery",
+    SortBy          = MediaSortBy.SortOrder,
+    Descending      = false,
+    Skip            = 0,
+    Take            = 100
+}, ct);
+```
+
+Raising the ceiling instead was the other option and is the wrong one: an entity with ten thousand
+attachments would then quietly turn one gallery render into a ten-thousand-row read.
 
 ## No quotas
 

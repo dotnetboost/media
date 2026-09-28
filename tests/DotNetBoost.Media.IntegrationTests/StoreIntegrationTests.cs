@@ -48,7 +48,10 @@ public sealed class PostgreSqlEfCoreTests(PostgreSqlFixture fixture) : StoreInte
     }
 
     private static Task ClearAsync(IntegrationContext context) =>
-        context.Database.ExecuteSqlRawAsync("""TRUNCATE TABLE "MediaFiles";""");
+        // Both tables. The attachment rows outlive a test that only truncates the files, and the
+        // next test's "this entity's links" assertions then count someone else's.
+        context.Database.ExecuteSqlRawAsync(
+            """TRUNCATE TABLE "MediaAttachments"; TRUNCATE TABLE "MediaFiles";""");
 }
 
 [Collection(PostgreSqlCollection.Name)]
@@ -58,7 +61,14 @@ public sealed class PostgreSqlDapperTests(PostgreSqlFixture fixture) : StoreInte
 
     protected override async Task<IMediaStore> CreateStoreAsync()
     {
-        var options = new DapperOptions { MediaFilesTable = "MediaFilesDapper", Dialect = SqlDialect.PostgreSql };
+        // Its own attachment table as well as its own file table. Both suites map into the same
+        // database, and a shared table would let one suite's rows decide another's assertions.
+        var options = new DapperOptions
+        {
+            MediaFilesTable       = "MediaFilesDapper",
+            MediaAttachmentsTable = "MediaAttachmentsDapper",
+            Dialect               = SqlDialect.PostgreSql
+        };
 
         _connection = new NpgsqlConnection(fixture.ConnectionString);
         await _connection.OpenAsync();
@@ -67,7 +77,8 @@ public sealed class PostgreSqlDapperTests(PostgreSqlFixture fixture) : StoreInte
 
         await using (var truncate = _connection.CreateCommand())
         {
-            truncate.CommandText = """TRUNCATE TABLE "MediaFilesDapper";""";
+            truncate.CommandText =
+                """TRUNCATE TABLE "MediaAttachmentsDapper"; TRUNCATE TABLE "MediaFilesDapper";""";
             await truncate.ExecuteNonQueryAsync();
         }
 
@@ -137,7 +148,8 @@ public sealed class SqlServerEfCoreTests(SqlServerFixture fixture) : StoreIntegr
             .Options);
 
         await _context.Database.EnsureCreatedAsync();
-        await _context.Database.ExecuteSqlRawAsync("DELETE FROM [MediaFiles];");
+        await _context.Database.ExecuteSqlRawAsync(
+            "DELETE FROM [MediaAttachments]; DELETE FROM [MediaFiles];");
 
         return new EfCoreMediaStore(_context);
     }
@@ -156,7 +168,14 @@ public sealed class SqlServerDapperTests(SqlServerFixture fixture) : StoreIntegr
 
     protected override async Task<IMediaStore> CreateStoreAsync()
     {
-        var options = new DapperOptions { MediaFilesTable = "MediaFilesDapper", Dialect = SqlDialect.SqlServer };
+        // Its own attachment table as well as its own file table, for the reason
+        // PostgreSqlDapperTests gives.
+        var options = new DapperOptions
+        {
+            MediaFilesTable       = "MediaFilesDapper",
+            MediaAttachmentsTable = "MediaAttachmentsDapper",
+            Dialect               = SqlDialect.SqlServer
+        };
 
         _connection = new SqlConnection(fixture.ConnectionString);
         await _connection.OpenAsync();
@@ -165,7 +184,7 @@ public sealed class SqlServerDapperTests(SqlServerFixture fixture) : StoreIntegr
 
         await using (var delete = _connection.CreateCommand())
         {
-            delete.CommandText = "DELETE FROM [MediaFilesDapper];";
+            delete.CommandText = "DELETE FROM [MediaAttachmentsDapper]; DELETE FROM [MediaFilesDapper];";
             await delete.ExecuteNonQueryAsync();
         }
 
@@ -182,7 +201,7 @@ public sealed class SqlServerDapperTests(SqlServerFixture fixture) : StoreIntegr
 [Collection(MongoDbCollection.Name)]
 public sealed class MongoStoreTests(MongoDbFixture fixture) : StoreIntegrationTests
 {
-    protected override Task<IMediaStore> CreateStoreAsync()
+    protected override async Task<IMediaStore> CreateStoreAsync()
     {
         MediaFileClassMapAccess.Register();
 
@@ -191,12 +210,19 @@ public sealed class MongoStoreTests(MongoDbFixture fixture) : StoreIntegrationTe
             // and it guarantees nothing is left over from a test that failed part-way.
             .GetDatabase($"media-{Guid.NewGuid():N}");
 
-        return Task.FromResult<IMediaStore>(new MongoMediaStore(database, new MongoDbOptions()));
+        var options = new MongoDbOptions();
+
+        // The relational fixtures run their DDL before handing the store over, and this is the same
+        // step: the attachment collection's unique index is part of what the store contract promises,
+        // and nothing else here would have created it.
+        await MongoMediaIndexes.EnsureCreatedAsync(database, options);
+
+        return new MongoMediaStore(database, options);
     }
 }
 
 /// <summary>
-/// Registers the driver's class map for the tests, which construct the store directly rather than
+/// Registers the driver's class maps for the tests, which construct the store directly rather than
 /// going through <c>UseMongoDb()</c>.
 /// </summary>
 internal static class MediaFileClassMapAccess
@@ -222,6 +248,21 @@ internal static class MediaFileClassMapAccess
 
                     foreach (var member in map.DeclaredMemberMaps)
                         member.SetIgnoreIfNull(true);
+                });
+            }
+
+            if (!MongoDB.Bson.Serialization.BsonClassMap.IsClassMapRegistered(typeof(MediaAttachment)))
+            {
+                MongoDB.Bson.Serialization.BsonClassMap.RegisterClassMap<MediaAttachment>(map =>
+                {
+                    map.AutoMap();
+                    map.MapIdMember(a => a.Id)
+                        .SetSerializer(new MongoDB.Bson.Serialization.Serializers.GuidSerializer(MongoDB.Bson.GuidRepresentation.Standard));
+
+                    // Standard representation here too, or the file id would be written in the
+                    // legacy binary subtype and would not compare equal to the file document's _id.
+                    map.MapMember(a => a.MediaFileId)
+                        .SetSerializer(new MongoDB.Bson.Serialization.Serializers.GuidSerializer(MongoDB.Bson.GuidRepresentation.Standard));
                 });
             }
 

@@ -2,6 +2,7 @@ using DotNetBoost.Media.API;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
 using Microsoft.EntityFrameworkCore;
+using SampleApp;
 using SampleApp.Data;
 using SampleApp.Domain;
 using SampleApp.Dtos;
@@ -44,9 +45,17 @@ builder.Services.AddMedia(options =>
     // ALTERNATIVE: Amazon S3, or any S3-compatible store.
     // .UseAmazonS3("my-app-media")
     .AllowContentTypes("image/*", "application/pdf")
+    // Reads the [MediaRole] attributes on Product and enforces them. Entities that declare nothing
+    // are not checked, so this line only ever tightens what was already declared.
+    .DeclareRolesFrom(typeof(Product).Assembly)
     .Build();
 
 builder.Services.AddProblemDetails();
+
+// Order matters: handlers run in the order they are registered, and each claims only what the ones
+// before it did not. This one answers a body the binder could not read with the 400 that
+// BadHttpRequestException already carries — without it, Development turns that into a 500.
+builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
 builder.Services.AddExceptionHandler<MediaExceptionHandler>();
 builder.Services.AddOpenApi();
 
@@ -110,12 +119,18 @@ app.MapPost("/api/products", async (CreateProductRequest request, AppDbContext d
 
 // Upload an image for a product. The two writes — the file and the product's own row — share the
 // DbContext, so one transaction covers both.
+//
+// `role` says what the image is for. Note the two different words: the category is where the BYTES
+// live, which is a property of the file and leads its storage path; the role is what THIS product
+// uses it for, which is a property of the link and can differ for another product using the same
+// image.
 app.MapPost("/api/products/{id:int}/images", async (
     int id,
     IFormFile file,
     AppDbContext db,
     IMediaManager media,
-    CancellationToken ct) =>
+    CancellationToken ct,
+    string? role = null) =>
 {
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
     if (product is null)
@@ -128,14 +143,96 @@ app.MapPost("/api/products/{id:int}/images", async (
         Content     = content,
         FileName    = file.FileName,
         ContentType = file.ContentType,
-        Category    = "product-images"
+        Category    = "product-images",
+        Role        = role ?? "gallery"
     }, ct);
 
     return Results.Created($"/api/media/{uploaded.Id}", uploaded.Id);
 }).DisableAntiforgery();
 
-// Deleting a product takes its files with it. Nothing in the database refers to a media row — that
-// is what lets one table serve every entity — so no cascade will do this for you.
+// Attach an image the library already holds — the draft-form case, and the one where an image is
+// shared with another product. Nothing is copied: both products point at the same bytes.
+app.MapPost("/api/products/{id:int}/images/{mediaId:guid}", async (
+    int id,
+    Guid mediaId,
+    AppDbContext db,
+    IMediaManager media,
+    CancellationToken ct,
+    string? role = null) =>
+{
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+    if (product is null)
+        return Results.NotFound();
+
+    await media.For(product).AddAsync(mediaId, role ?? "gallery", ct);
+
+    return Results.NoContent();
+});
+
+// Make one image the product's primary. SetAsync rather than AddAsync, because a product has one
+// primary image: it detaches whatever held the role, in one operation rather than two with a window
+// in between where the product has two primaries or none.
+//
+// The displaced image is only detached. It stays in the library, and stays attached to every other
+// product using it.
+app.MapPut("/api/products/{id:int}/images/primary", async (
+    int id,
+    SetPrimaryImageRequest request,
+    AppDbContext db,
+    IMediaManager media,
+    CancellationToken ct) =>
+{
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+    if (product is null)
+        return Results.NotFound();
+
+    await media.For(product).SetAsync("primary", request.MediaFileId, ct);
+
+    return Results.NoContent();
+});
+
+// Save the order a gallery was dragged into.
+app.MapPut("/api/products/{id:int}/images/gallery/order", async (
+    int id,
+    ReorderGalleryRequest request,
+    AppDbContext db,
+    IMediaManager media,
+    CancellationToken ct) =>
+{
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+    if (product is null)
+        return Results.NotFound();
+
+    await media.For(product).ReorderAsync("gallery", request.MediaFileIds, ct);
+
+    return Results.NoContent();
+});
+
+// Take an image off this product WITHOUT deleting it. This is what a product page's "remove" button
+// does: the file stays in the library and stays attached to every other product using it. Deleting
+// the file itself is DELETE /api/media/{id}, and that removes it from every product at once.
+app.MapDelete("/api/products/{id:int}/images/{mediaId:guid}", async (
+    int id,
+    Guid mediaId,
+    AppDbContext db,
+    IMediaManager media,
+    CancellationToken ct,
+    string? role = null) =>
+{
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+    if (product is null)
+        return Results.NotFound();
+
+    // No role given detaches it from every role on this product.
+    return await media.For(product).DetachAsync(mediaId, role, ct)
+        ? Results.NoContent()
+        : Results.NotFound();
+});
+
+// Deleting a product takes its files with it — the ones it alone was using. An image another product
+// also references is only unlinked, which is the point of the attachment table: one product going
+// must not pull a shared image out of the others. Nothing in the database refers to a media row —
+// that is what lets two tables serve every entity — so no cascade will do this for you.
 app.MapDelete("/api/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
 {
     var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
@@ -154,12 +251,22 @@ app.Run();
 
 static async Task<ProductResponse> ToResponseAsync(Product product, IMediaManager media, CancellationToken ct)
 {
-    var files = await media.For(product).ListAsync("product-images", ct);
+    // ListWithRolesAsync rather than ListAsync: the client needs to know which image is the primary
+    // one and what order the gallery is in, and that lives on the link, not on the file. Two reads
+    // for the whole product, rather than one per role.
+    var attached = await media.For(product).ListWithRolesAsync(ct);
 
     return new ProductResponse(
         product.Id,
         product.Sku,
         product.Name,
         product.Price,
-        [.. files.Select(f => new ProductImage(f.Id, f.FileName, f.ContentType, f.Size, $"/api/media/{f.Id}/content"))]);
+        [.. attached.Select(a => new ProductImage(
+            a.File.Id,
+            a.File.FileName,
+            a.File.ContentType,
+            a.File.Size,
+            $"/api/media/{a.File.Id}/content",
+            a.Role,
+            a.SortOrder))]);
 }

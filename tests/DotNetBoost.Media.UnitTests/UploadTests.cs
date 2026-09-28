@@ -233,4 +233,66 @@ public class UploadTests
         Assert.Equal("1920", read.Metadata["width"]);
         Assert.Equal("1080", read.Metadata["height"]);
     }
+
+    [Fact]
+    public async Task A_category_is_lower_cased_so_two_spellings_are_one_bucket()
+    {
+        var harness = Harness.Create();
+
+        var upper = await harness.Media.UploadAsync(
+            TestMedia.Upload(TestMedia.Png(), "a.png", category: "Product-Images"));
+        var lower = await harness.Media.UploadAsync(
+            TestMedia.Upload(TestMedia.Png(32), "b.png", category: "product-images"));
+
+        Assert.Equal("product-images", upper.Category);
+        Assert.Equal("product-images", lower.Category);
+
+        // And the same bucket in the backend, not two directories holding the same kind of file.
+        Assert.All(harness.Storage.Paths, path => Assert.StartsWith("product-images/", path, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_category_filter_matches_however_it_is_spelled()
+    {
+        var harness = Harness.Create();
+
+        await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(), "a.png", category: "Invoices"));
+
+        var page = await harness.Media.ListAsync(new MediaQuery { Category = "INVOICES" });
+
+        // The column is lower-cased on write, so a filter that was not would silently match nothing.
+        Assert.Equal("a.png", Assert.Single(page.Items).FileName);
+    }
+
+    [Fact]
+    public async Task An_updated_category_is_lower_cased_too()
+    {
+        var harness = Harness.Create();
+        var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(), category: "photos"));
+
+        var updated = await harness.Media.UpdateAsync(file.Id, new MediaUpdate { Category = "  Archive  " });
+
+        Assert.Equal("archive", updated.Category);
+    }
+
+    [Fact]
+    public async Task An_emptied_category_becomes_none_rather_than_an_empty_string()
+    {
+        var harness = Harness.Create();
+        var file    = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(), category: "photos"));
+
+        var updated = await harness.Media.UpdateAsync(file.Id, new MediaUpdate { Category = "" });
+
+        Assert.Null(updated.Category);
+    }
+
+    [Fact]
+    public async Task A_category_longer_than_the_limit_is_refused()
+    {
+        var harness = Harness.Create();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => harness.Media.UploadAsync(
+                TestMedia.Upload(TestMedia.Png(), category: new string('x', MediaCategories.MaxLength + 1))));
+    }
 }

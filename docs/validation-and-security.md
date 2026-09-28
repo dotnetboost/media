@@ -138,23 +138,40 @@ The route group is returned so this takes one line:
 app.MapMediaEndpoints().RequireAuthorization("media");
 ```
 
-Per-file authorization — "this user may read this file" — is yours: the library records
-`OwnerEntityName`, `OwnerEntityId` and `UploadedBy` so you can decide, but it does not decide for
-you. For anything beyond "signed in", write your own routes over `IMediaManager` and put your
+Per-file authorization — "this user may read this file" — is yours: the library records who uploaded
+a file and which entities are attached to it so you can decide, but it does not decide for you. Note
+that a file may be attached to several entities, so the question is about all of them rather than
+one. For anything beyond "signed in", write your own routes over `IMediaManager` and put your
 checks in them.
 
 ## Serving stored files safely
 
-Two rules for anything user-supplied:
+`GET /api/media/{id}/content` does three things about this, and none of them is configurable.
 
-- **Serve from a different origin** than your application, or with
-  `Content-Security-Policy: sandbox`. An HTML or SVG file served from your own origin runs script
-  in your origin.
-- **Send `X-Content-Type-Options: nosniff`.** Without it a browser may sniff the content and
-  execute something you served as `text/plain`.
+- **`X-Content-Type-Options: nosniff` on every response.** The stored type was already verified
+  against the file's own leading bytes, so a browser sniffing its way to a different one can only
+  make it wrong.
+- **The types that run script are never served inline.** `text/html`, `application/xhtml+xml`,
+  `image/svg+xml`, `text/xml`, `application/xml`, `text/xsl` and the JavaScript types come back as
+  `Content-Disposition: attachment`, whatever `?download` says.
+- **`Content-Security-Policy: sandbox` on those same responses**, for whatever opens one anyway.
 
-`MapMediaEndpoints()` serves the stored content type, which has been verified against the bytes.
-That is a useful part of the answer and not all of it.
+SVG is the one that surprises people: it is an XML document that may carry a `<script>`, not
+merely a picture. Uploading one is fine and it is still stored — this is about how a browser is
+told to treat the bytes, not about refusing them. Nor does it break embedding: browsers honour
+`Content-Disposition` for navigations, not for `<img>` or `<video>`, so a stored SVG logo draws
+exactly where a page asks for it. What it stops is the file being opened as a document in its own
+right, in your origin, with the session cookie of whoever followed the link.
+
+`MediaContentTypes.IsActiveContent(contentType)` is public, so a route of your own can ask the same
+question rather than keep a list that goes stale.
+
+**What is still yours.** Serving user uploads from a **separate origin** is stronger than any
+header, because it moves them out of your origin entirely rather than defending the boundary from
+inside it. It is the right answer if you accept files from the public, and the only safe way to
+serve user HTML inline — put your own route over `IMediaManager` on that origin. `GET
+/api/media/{id}/url` already hands out links on the storage account's own host, which is a
+different origin by construction.
 
 ## Storage account posture
 
@@ -170,6 +187,7 @@ SHA-256 of the stored bytes, on by default and free — the bytes are already st
 detects corruption and backs optional deduplication.
 
 `DeduplicateByChecksum()` is **off** by default, and the reason is worth knowing before you turn it
-on: the returned row carries the *first* upload's name, category, owner and uploader, so two
-callers who "uploaded" a file share one row and one lifetime — deleting it deletes it for both.
-Right for interchangeable content-addressed assets; wrong for somebody's document.
+on: the returned row carries the *first* upload's name, category and uploader, so two callers who
+"uploaded" a file share one row and one lifetime — deleting it deletes it for both. Attaching is
+unaffected: an upload through `media.For(entity)` attaches the deduplicated file, so both entities
+have it. Right for interchangeable content-addressed assets; wrong for somebody's document.

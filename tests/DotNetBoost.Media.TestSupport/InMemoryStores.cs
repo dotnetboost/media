@@ -7,19 +7,53 @@ using System.Collections.Concurrent;
 namespace DotNetBoost.Media.TestSupport;
 
 /// <summary>
-/// An <see cref="IMediaStore"/> in a dictionary. Runs the same contract suite as the real stores
-/// (see ProviderTests), so a test built on it is testing against something known to behave like a
-/// database — which is the only reason a fake store is worth having.
+/// An <see cref="IMediaStore"/> in a dictionary — both of its tables: the files, and the
+/// attachments linking them to entities. Runs the same contract suite as the real stores (see
+/// ProviderTests), so a test built on it is testing against something known to behave like a
+/// database, which is the only reason a fake store is worth having.
 /// </summary>
 public sealed class InMemoryMediaStore : IMediaStore
 {
     private readonly ConcurrentDictionary<Guid, MediaFile> _files = new();
+    private readonly ConcurrentDictionary<Guid, MediaAttachment> _attachments = new();
 
     /// <summary>Every row, live and deleted, for a test that wants to look directly.</summary>
     public IReadOnlyCollection<MediaFile> All => [.. _files.Values];
 
     /// <summary>How many rows exist, including soft-deleted ones.</summary>
     public int Count => _files.Count;
+
+    /// <summary>Every attachment row, for a test asserting on the links themselves.</summary>
+    public IReadOnlyCollection<MediaAttachment> Attachments => [.. _attachments.Values];
+
+    private int _queries;
+    private int _counts;
+
+    /// <summary>
+    /// How many listing queries have been issued, and how many counts beside them. A real store
+    /// pays a round trip for each, so a test can assert that a read costs what it should —
+    /// whether an extra aggregate is being run for a total nobody reads, say.
+    /// </summary>
+    public int Queries => Volatile.Read(ref _queries);
+
+    /// <inheritdoc cref="Queries"/>
+    public int Counts => Volatile.Read(ref _counts);
+
+    private int _attachmentWrites;
+
+    /// <summary>
+    /// How many attachment writes have been issued, counting a batch as the one command it is.
+    /// A test can then assert that saving a reorder costs one round trip rather than one per file.
+    /// </summary>
+    public int AttachmentWrites => Volatile.Read(ref _attachmentWrites);
+
+    /// <summary>Zeroes the counters, so a test can measure one call rather than its setup.</summary>
+    public void ResetCounters()
+    {
+        Interlocked.Exchange(ref _queries, 0);
+        Interlocked.Exchange(ref _counts, 0);
+        Interlocked.Exchange(ref _attachmentWrites, 0);
+    }
 
     /// <inheritdoc/>
     public Task AddAsync(MediaFile file, CancellationToken ct = default)
@@ -63,9 +97,26 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc/>
     public Task<IReadOnlyList<MediaFile>> QueryAsync(MediaQuery query, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref _queries);
+
         ArgumentNullException.ThrowIfNull(query);
 
         var matched = Filter(query);
+
+        // Sorting by the entity's own order means sorting on the attachment, not the file, so the
+        // key comes from the links the filter matched. A file attached under several roles sorts by
+        // its first, which is what keeps a row that appears once from having two positions.
+        if (query.SortBy == MediaSortBy.SortOrder)
+        {
+            var keys = OrderingKeys(query);
+
+            matched = query.Descending
+                ? matched.OrderByDescending(f => keys.GetValueOrDefault(f.Id)).ThenByDescending(f => f.Id)
+                : matched.OrderBy(f => keys.GetValueOrDefault(f.Id)).ThenBy(f => f.Id);
+
+            return Task.FromResult<IReadOnlyList<MediaFile>>(
+                [.. matched.Skip(query.Skip).Take(query.Take).Select(Clone)]);
+        }
 
         matched = (query.SortBy, query.Descending) switch
         {
@@ -84,6 +135,7 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc/>
     public Task<int> CountAsync(MediaQuery query, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref _counts);
         ArgumentNullException.ThrowIfNull(query);
         return Task.FromResult(Filter(query).Count());
     }
@@ -99,6 +151,185 @@ public sealed class InMemoryMediaStore : IMediaStore
         return Task.FromResult(match is null ? null : Clone(match));
     }
 
+    /// <inheritdoc/>
+    public Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        // The unique index the real stores carry, enforced here so a test can rely on it: one file
+        // may hold several roles on one entity, but not the same role twice.
+        var duplicate = _attachments.Values.Any(a =>
+            a.MediaFileId == attachment.MediaFileId
+            && string.Equals(a.OwnerEntityName, attachment.OwnerEntityName, StringComparison.Ordinal)
+            && string.Equals(a.OwnerEntityId, attachment.OwnerEntityId, StringComparison.Ordinal)
+            && string.Equals(a.Role, attachment.Role, StringComparison.Ordinal));
+
+        if (duplicate)
+        {
+            throw new MediaConflictException(
+                $"Media file '{attachment.MediaFileId}' is already attached to {attachment.OwnerEntityName} " +
+                $"{attachment.OwnerEntityId} as '{attachment.Role}'.");
+        }
+
+        if (!_attachments.TryAdd(attachment.Id, Clone(attachment)))
+            throw new MediaConflictException($"Could not record attachment '{attachment.Id}'. A row with that id already exists.");
+
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default) =>
+        Task.FromResult(_attachments.TryRemove(attachmentId, out _));
+
+    /// <inheritdoc/>
+    public Task<int> RemoveAttachmentsAsync(MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var doomed = _attachments.Values.Where(a => Owned(a, owner) && RoleMatches(a, role)).ToArray();
+
+        var removed = 0;
+        foreach (var attachment in doomed)
+        {
+            if (_attachments.TryRemove(attachment.Id, out _))
+                removed++;
+        }
+
+        return Task.FromResult(removed);
+    }
+
+    /// <inheritdoc/>
+    public Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default)
+    {
+        var doomed = _attachments.Values.Where(a => a.MediaFileId == mediaFileId).ToArray();
+
+        var removed = 0;
+        foreach (var attachment in doomed)
+        {
+            if (_attachments.TryRemove(attachment.Id, out _))
+                removed++;
+        }
+
+        return Task.FromResult(removed);
+    }
+
+    /// <inheritdoc/>
+    public Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref _attachmentWrites);
+        Apply(attachment);
+        return Task.CompletedTask;
+    }
+
+    /// <inheritdoc/>
+    public Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return Task.CompletedTask;
+
+        // Counted as one, because that is what it is against a real store: one command, one
+        // transaction. Counting it per row would hide the very thing a test asserting on this
+        // wants to see.
+        Interlocked.Increment(ref _attachmentWrites);
+
+        // Checked before any of them is applied, so a batch naming a row that is gone leaves the
+        // rest alone — the all-or-nothing a real store gets from its transaction.
+        foreach (var attachment in attachments)
+        {
+            ArgumentNullException.ThrowIfNull(attachment);
+
+            if (!_attachments.ContainsKey(attachment.Id))
+                throw new MediaNotFoundException(attachment.Id);
+        }
+
+        foreach (var attachment in attachments)
+            Apply(attachment);
+
+        return Task.CompletedTask;
+    }
+
+    private void Apply(MediaAttachment attachment)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        if (!_attachments.ContainsKey(attachment.Id))
+            throw new MediaNotFoundException(attachment.Id);
+
+        _attachments[attachment.Id] = Clone(attachment);
+    }
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
+        Guid mediaFileId, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<MediaAttachment>>(
+            [.. _attachments.Values
+                .Where(a => a.MediaFileId == mediaFileId)
+                .OrderBy(a => a.CreatedAt).ThenBy(a => a.Id)
+                .Select(Clone)]);
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<MediaAttachment>>(
+            [.. _attachments.Values
+                .Where(a => Owned(a, owner) && RoleMatches(a, role))
+                .OrderBy(a => a.Role, StringComparer.Ordinal).ThenBy(a => a.SortOrder).ThenBy(a => a.Id)
+                .Select(Clone)]);
+
+    /// <inheritdoc/>
+    public Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaFileIds);
+
+        var wanted = mediaFileIds.ToHashSet();
+
+        return Task.FromResult<IReadOnlySet<Guid>>(
+            _attachments.Values
+                .Where(a => wanted.Contains(a.MediaFileId) && !Owned(a, excluding))
+                .Select(a => a.MediaFileId)
+                .ToHashSet());
+    }
+
+    private static bool Owned(MediaAttachment attachment, MediaOwner owner) =>
+        string.Equals(attachment.OwnerEntityName, owner.EntityName, StringComparison.Ordinal)
+        && string.Equals(attachment.OwnerEntityId, owner.EntityId, StringComparison.Ordinal);
+
+    private static bool RoleMatches(MediaAttachment attachment, string? role) =>
+        role is null || string.Equals(attachment.Role, role, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The attachments an owner-filtered query matches, which is where both the join and the
+    /// entity's own ordering come from.
+    /// </summary>
+    private IEnumerable<MediaAttachment> Matching(MediaQuery query)
+    {
+        var owner = new MediaOwner(query.OwnerEntityName!, query.OwnerEntityId ?? string.Empty);
+
+        return _attachments.Values.Where(a =>
+            string.Equals(a.OwnerEntityName, owner.EntityName, StringComparison.Ordinal)
+            && (query.OwnerEntityId is null || string.Equals(a.OwnerEntityId, owner.EntityId, StringComparison.Ordinal))
+            && RoleMatches(a, query.Role));
+    }
+
+    /// <summary>
+    /// Each matched file's position in the owner's order: its lowest role, then its lowest position.
+    /// A file the entity attached twice therefore still has a single place in the results.
+    /// <para>
+    /// The two minima are taken independently rather than as the pair belonging to the lowest role,
+    /// because that is what the relational stores can express — the pair would need a correlated
+    /// subquery ordered and limited inside an ORDER BY. The two agree wherever it matters: narrowed
+    /// to one role, which is the ordering anyone asks for, there is only one row per file.
+    /// </para>
+    /// </summary>
+    private Dictionary<Guid, (string Role, int SortOrder)> OrderingKeys(MediaQuery query) =>
+        Matching(query)
+            .GroupBy(a => a.MediaFileId)
+            .ToDictionary(
+                g => g.Key,
+                g => (Role: g.Select(a => a.Role).Min(StringComparer.Ordinal)!, SortOrder: g.Min(a => a.SortOrder)));
+
     private IEnumerable<MediaFile> Filter(MediaQuery query)
     {
         var files = _files.Values.AsEnumerable();
@@ -106,11 +337,20 @@ public sealed class InMemoryMediaStore : IMediaStore
         if (!query.IncludeDeleted)
             files = files.Where(f => f.DeletedAt is null);
 
-        if (query.OwnerEntityName is { } ownerName)
-            files = files.Where(f => f.OwnerEntityName == ownerName);
+        // The join, and only when it is asked for. An unfiltered listing never touches the
+        // attachment table, so a file linked to nine entities appears once rather than nine times,
+        // and a file linked to none appears at all.
+        if (query.OwnerEntityName is not null)
+        {
+            var attached = Matching(query).Select(a => a.MediaFileId).ToHashSet();
+            files = files.Where(f => attached.Contains(f.Id));
+        }
 
-        if (query.OwnerEntityId is { } ownerId)
-            files = files.Where(f => f.OwnerEntityId == ownerId);
+        if (query.Unattached)
+        {
+            var linked = _attachments.Values.Select(a => a.MediaFileId).ToHashSet();
+            files = files.Where(f => !linked.Contains(f.Id));
+        }
 
         if (query.Category is { } category)
             files = files.Where(f => f.Category == category);
@@ -152,8 +392,6 @@ public sealed class InMemoryMediaStore : IMediaStore
         StorageContainer = file.StorageContainer,
         StoragePath      = file.StoragePath,
         Checksum         = file.Checksum,
-        OwnerEntityName  = file.OwnerEntityName,
-        OwnerEntityId    = file.OwnerEntityId,
         Category         = file.Category,
         Tags             = file.Tags,
         Metadata         = file.Metadata,
@@ -161,6 +399,17 @@ public sealed class InMemoryMediaStore : IMediaStore
         CreatedAt        = file.CreatedAt,
         UpdatedAt        = file.UpdatedAt,
         DeletedAt        = file.DeletedAt
+    };
+
+    private static MediaAttachment Clone(MediaAttachment attachment) => new()
+    {
+        Id              = attachment.Id,
+        MediaFileId     = attachment.MediaFileId,
+        OwnerEntityName = attachment.OwnerEntityName,
+        OwnerEntityId   = attachment.OwnerEntityId,
+        Role            = attachment.Role,
+        SortOrder       = attachment.SortOrder,
+        CreatedAt       = attachment.CreatedAt
     };
 }
 
@@ -283,7 +532,7 @@ public static class TestMedia
         string? contentType = "image/png",
         string? category = null,
         IReadOnlyList<string>? tags = null,
-        MediaOwner? owner = null) =>
+        string? role = null) =>
         new()
         {
             Content     = new MemoryStream(content, writable: false),
@@ -291,6 +540,6 @@ public static class TestMedia
             ContentType = contentType,
             Category    = category,
             Tags        = tags,
-            Owner       = owner
+            Role        = role
         };
 }

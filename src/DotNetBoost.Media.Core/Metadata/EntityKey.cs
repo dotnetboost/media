@@ -3,10 +3,10 @@ using System.Globalization;
 namespace DotNetBoost.Media.Core.Metadata;
 
 /// <summary>
-/// Formats an entity's primary key as the string stored in <see cref="Models.MediaFile.OwnerEntityId"/>.
+/// Formats an entity's primary key as the string stored in <see cref="Models.MediaAttachment.OwnerEntityId"/>.
 /// One column serves <c>int</c>, <c>long</c>, <c>Guid</c> and <c>string</c> keys, so the format
 /// has to be stable and culture-independent — a key formatted under <c>ar-SA</c> and read back
-/// under <c>en-US</c> must be the same string, or the file stops belonging to its entity.
+/// under <c>en-US</c> must be the same string, or the entity's files stop belonging to it.
 /// </summary>
 public static class EntityKey
 {

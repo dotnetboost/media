@@ -100,14 +100,26 @@ sharing a name.
 ### `MediaModelOptions` (EF Core)
 
 ```csharp
-modelBuilder.ApplyMedia(o => { o.MediaFilesTable = "Uploads"; o.Schema = "media"; });
+modelBuilder.ApplyMedia(o =>
+{
+    o.MediaFilesTable       = "Uploads";
+    o.MediaAttachmentsTable = "UploadLinks";
+    o.Schema                = "media";
+});
 ```
+
+| | Default | |
+|---|---|---|
+| `MediaFilesTable` | `MediaFiles` | |
+| `MediaAttachmentsTable` | `MediaAttachments` | The links between files and your entities. Two tables in total, whatever you attach media to. |
+| `Schema` | `null` | The model's default schema. |
 
 ### `DapperOptions`
 
 | | Default | |
 |---|---|---|
 | `MediaFilesTable` | `MediaFiles` | Matches the EF Core store, so one database serves both. |
+| `MediaAttachmentsTable` | `MediaAttachments` | Likewise. |
 | `Schema` | `null` | SQLite has none. |
 | `Dialect` | *(inferred)* | Set it when the connection is a wrapper. |
 
@@ -116,14 +128,46 @@ modelBuilder.ApplyMedia(o => { o.MediaFilesTable = "Uploads"; o.Schema = "media"
 | | Default | |
 |---|---|---|
 | `MediaFilesCollection` | `mediaFiles` | |
-| `CreateIndexes` | `true` | |
+| `MediaAttachmentsCollection` | `mediaAttachments` | A collection of its own rather than an array inside each file: MongoDB sorts an array field by its smallest element, not the one a filter matched, so "this product's gallery in order" would have ordered by the lowest position the file holds for *any* owner. |
+| `CreateIndexes` | `true` | Creates both collections' indexes at startup. `MongoMediaIndexes.EnsureCreatedAsync` does the same from a deployment step. |
+
+## Declaring an entity's roles
+
+Opt-in. An entity that declares nothing accepts any role, as every entity did before this existed.
+
+```csharp
+[MediaEntity("Product")]
+[MediaRole("primary")]
+[MediaRole("gallery", Multiple = true)]
+[MediaRole("seo")]
+public class Product { public int Id { get; set; } }
+```
+
+| Builder method | |
+|---|---|
+| `DeclareRolesFrom(assembly)` | reads every `[MediaRole]` in that assembly |
+| `DeclareRoles<TEntity>()` | reads one type's attributes |
+| `DeclareRoles(name, r => r.One("…").Many("…"))` | declares on the builder, for a type you cannot annotate |
+
+The declarations are read at `Build()`, not when the method is called, so these lines may sit
+anywhere in the chain. They are filed under the entity's **stored name**, which is what lets
+`media.For("Product", "42")` and the REST endpoints be checked too — neither has a class to read an
+attribute from.
+
+Declaring the same entity twice is refused rather than resolved: two sources disagreeing has no
+sensible winner, and silently picking one would leave the other's roles unenforced.
 
 ## Deduplication
 
 Off by default, and worth understanding before turning on. When an upload's bytes are already
 stored, the existing row is returned instead of a second copy — so two callers who "uploaded" a
-file share **one row and one lifetime**, and the row carries the *first* upload's name, category,
-owner and uploader. Deleting it deletes it for both.
+file share **one row and one lifetime**, and the row carries the *first* upload's name, category and
+uploader. Deleting it deletes it for both.
+
+Attaching is unaffected, and this is where the attachment table earns its keep: an upload through
+`media.For(entity)` stores or deduplicates the bytes and then attaches, so identical bytes mean one
+file and a second link rather than a second copy. Both entities have it, and neither took it off the
+other.
 
 Right for interchangeable content-addressed assets. Wrong for somebody's document.
 

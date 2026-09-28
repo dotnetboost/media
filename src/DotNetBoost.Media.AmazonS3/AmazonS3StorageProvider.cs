@@ -88,16 +88,20 @@ public sealed class AmazonS3StorageProvider : IMediaStorageProvider, IMediaStora
     public async Task<Stream> OpenReadAsync(string container, string path, CancellationToken ct = default)
     {
         var safe = MediaPaths.Validate(path);
+        var key  = Key(safe);
 
         try
         {
             var response = await _s3.GetObjectAsync(
-                new GetObjectRequest { BucketName = container, Key = Key(safe) },
+                new GetObjectRequest { BucketName = container, Key = key },
                 ct).ConfigureAwait(false);
 
-            // The response stream owns the underlying HTTP connection; the caller disposes it
-            // through MediaContent.
-            return response.ResponseStream;
+            // Wrapped rather than returned as it is. S3's response stream is forward-only, and a
+            // forward-only stream is one ASP.NET Core will not serve a Range from — it answers the
+            // whole object with a 200 instead, so seeking through a video would pull the entire
+            // file through the application every time. The wrapper owns the response and the HTTP
+            // connection under it; the caller disposes it through MediaContent.
+            return new S3ReadStream(_s3, container, key, Name, safe, response.ContentLength, response.ResponseStream);
         }
         catch (AmazonS3Exception ex) when (IsMissing(ex))
         {
@@ -105,7 +109,7 @@ public sealed class AmazonS3StorageProvider : IMediaStorageProvider, IMediaStora
         }
         catch (AmazonS3Exception ex)
         {
-            throw new MediaStorageException($"Could not read object '{Key(safe)}' from bucket '{container}': {ex.Message}", ex, Name);
+            throw new MediaStorageException($"Could not read object '{key}' from bucket '{container}': {ex.Message}", ex, Name);
         }
     }
 

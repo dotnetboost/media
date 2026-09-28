@@ -8,9 +8,10 @@
 **Upload a file once. Know what it is, where it is, and what it belongs to — forever.**
 
 You inject one service. DotNetBoost.Media stores the bytes wherever you tell it — local disk,
-Azure Blob Storage, Amazon S3 — and records every upload as a row in **one table**, with no new
-column on your entities, no join table per attachment, and no migration when you add media to
-something new.
+Azure Blob Storage, Amazon S3 — and records every upload in **two tables**, whatever you attach it
+to: no new column on your entities, no table per entity type, and no migration when you add media
+to something new. One file can belong to several entities at once, each deciding what it uses the
+file for.
 
 ```csharp
 var file = await media.For(product).UploadAsync(new MediaUpload
@@ -93,7 +94,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseExceptionHandler();
-app.MapMediaEndpoints();          // POST/GET/PATCH/DELETE /api/media
+app.MapMediaEndpoints();          // upload, download, list, attach, detach, delete
 
 // Attach a file to one of your own entities.
 app.MapPost("/products/{id:int}/images", async (
@@ -120,7 +121,7 @@ app.MapGet("/products/{id:int}/images", async (int id, AppDbContext db, IMediaMa
     var product = await db.Products.FindAsync(id);
     if (product is null) return Results.NotFound();
 
-    var files = await media.For(product).ListAsync("product-images");
+    var files = await media.For(product).ListByCategoryAsync("product-images");
 
     // Project, rather than returning the rows as they are: MediaFileInfo carries the storage
     // provider, container and path, and publishing those hands every client a map of your
@@ -175,7 +176,7 @@ The response is the row. The bytes are under `uploads/2026/09/27/…png`. Fetch 
 
 | | |
 |---|---|
-| **One table for everything** | Adding media to a new entity costs no table, no column and no migration. The row points at your entity by name and key. |
+| **Two tables for everything** | Adding media to a new entity costs no table, no column and no migration. An attachment row points at your entity by name and key — and one file can be attached to as many entities as you like, each with its own role and order. |
 | **Bytes anywhere** | Local disk, Azure Blob Storage, Amazon S3 — or several at once. Each row remembers its own backend, so switching does not strand what came before. |
 | **Nothing is taken on trust** | Size is measured while writing. The declared content type is checked against the file's own leading bytes. Executables are refused by default. The storage path is derived from the file's id, never from its name. |
 | **Single-pass streaming** | A 2 GB upload costs 2 GB of network and no memory: the size, the SHA-256 and the size limit all fall out of the one read the backend does. |
@@ -213,22 +214,34 @@ services.AddMedia()
 
 ---
 
-## The row
+## The two rows
 
-One table, `MediaFiles`. The bytes live in the backend; this is everything else about them.
+`MediaFiles` — the bytes live in the backend; this is everything else about them.
 
 | Column | |
 |---|---|
 | `Id` | A GUID, assigned before the bytes are written — the storage path is derived from it. |
 | `FileName` `ContentType` `Size` `Checksum` | What it is. Measured and sniffed, not taken from the request. |
 | `StorageProvider` `StorageContainer` `StoragePath` | **Where the bytes are.** The path, not the bytes. |
-| `OwnerEntityName` `OwnerEntityId` | What it is attached to, if anything. |
 | `Category` `Tags` `Metadata` | How you find it again. |
 | `UploadedBy` `CreatedAt` `UpdatedAt` `DeletedAt` | Who, when, and whether it is still live. |
 
-There is **no foreign key** from a media row to your entity. That is deliberate: it is what lets
-one table serve every entity in the application. The price is that deleting an entity does not
-cascade — call `media.For(entity).DeleteAllAsync()` when it goes.
+`MediaAttachments` — who is using it, and for what.
+
+| Column | |
+|---|---|
+| `MediaFileId` | The file. A file may have no attachments, one, or many. |
+| `OwnerEntityName` `OwnerEntityId` | The entity using it. |
+| `Role` | What that entity uses it for — `primary`, `gallery`, `seo`, or whatever you mean. |
+| `SortOrder` | Its position within that role. |
+
+The file records nothing about who uses it, which is what lets the same image be one product's main
+photo and another's third gallery shot — neither answer belongs to the file.
+
+There is **no foreign key** from an attachment row to your entity. That is deliberate: it is what
+lets two tables serve every entity in the application. The price is that deleting an entity does not
+cascade — call `media.For(entity).DeleteAllAsync()` when it goes, which deletes the files that
+entity alone was using and unlinks the rest.
 
 ---
 
@@ -283,6 +296,13 @@ cannot pick where a file lands, collide with another, or aim at a directory. Eve
 re-validated on the way back out of the database, and the local backend proves containment against
 the resolved root as well.
 
+**A stored file cannot script your origin.** Downloads always carry
+`X-Content-Type-Options: nosniff`, and the types a browser runs script from — HTML, SVG, XML,
+JavaScript — are served as attachments and sandboxed rather than inline, whatever `?download`
+says. Embedding still works: `Content-Disposition` governs navigations, not `<img>`, so a stored
+SVG logo draws where a page asks for it. Serving user uploads from a separate origin is still
+stronger, and `GET /api/media/{id}/url` already does.
+
 ---
 
 ## Documentation
@@ -291,7 +311,7 @@ the resolved root as well.
 |---|---|
 | [Architecture](https://github.com/dotnetboost/media/blob/main/docs/architecture.md) | The two halves, and why the ordering between them is what it is |
 | [Uploading and reading](https://github.com/dotnetboost/media/blob/main/docs/uploading-and-reading.md) | `IMediaManager` in full |
-| [Attaching media to entities](https://github.com/dotnetboost/media/blob/main/docs/attaching-to-entities.md) | `For(entity)`, names, keys, and cleanup |
+| [Attaching media to entities](https://github.com/dotnetboost/media/blob/main/docs/attaching-to-entities.md) | `For(entity)`, roles and ordering, one file on many entities, and cleanup |
 | [Storage backends](https://github.com/dotnetboost/media/blob/main/docs/storage-backends.md) | Local disk, Azure, S3 — and running several |
 | [Metadata stores](https://github.com/dotnetboost/media/blob/main/docs/metadata-stores.md) | EF Core, Dapper, MongoDB |
 | [Validation and security](https://github.com/dotnetboost/media/blob/main/docs/validation-and-security.md) | Limits, allow-lists, sniffing, path safety |

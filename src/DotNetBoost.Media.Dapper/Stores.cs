@@ -4,13 +4,14 @@ using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
 using System.Data;
 using System.Data.Common;
+using System.Globalization;
 using System.Text;
 
 namespace DotNetBoost.Media.Dapper;
 
 /// <summary>
-/// Keeps media rows in a relational table, through Dapper, for applications that do not use
-/// EF Core.
+/// Keeps media rows, and the attachments linking them to entities, in relational tables through
+/// Dapper, for applications that do not use EF Core.
 /// <para>
 /// The connection comes from the scope, so an application that begins a transaction on it and
 /// registers that transaction in the scope gets its entity and its media rows committed together
@@ -132,18 +133,28 @@ public sealed class DapperMediaStore(
         ArgumentNullException.ThrowIfNull(query);
 
         var sql        = Sql;
-        var (where, p) = BuildWhere(sql.Dialect, query);
+        var (where, p) = BuildWhere(sql, query);
 
         // Every ordering ends on the id: two rows that tie on the sort column would otherwise page
         // unstably, repeating one and skipping another.
-        var column    = DapperStatements.Quote(sql.Dialect, query.SortBy switch
-        {
-            MediaSortBy.FileName => "FileName",
-            MediaSortBy.Size     => "Size",
-            _                    => "CreatedAt"
-        });
         var direction = query.Descending ? "DESC" : "ASC";
-        var order     = $"ORDER BY {column} {direction}, {DapperStatements.Quote(sql.Dialect, "Id")} {direction} ";
+        var id        = DapperStatements.Quote(sql.Dialect, "Id");
+
+        // The entity's own order lives on the attachment, so the key is two correlated subqueries
+        // over the links this query matched: the lowest role, then the lowest position. Narrowed to
+        // one role — the ordering anyone actually asks for — the first is constant and this is
+        // simply that role's SortOrder. The engine already refused SortOrder without an owner, so
+        // the subqueries always have one to correlate on.
+        var order = query.SortBy == MediaSortBy.SortOrder
+            ? $"ORDER BY ({Correlated(sql, query, $"MIN({AttachmentAlias}.{DapperStatements.Quote(sql.Dialect, "Role")})")}) {direction}, " +
+              $"({Correlated(sql, query, $"MIN({AttachmentAlias}.{DapperStatements.Quote(sql.Dialect, "SortOrder")})")}) {direction}, " +
+              $"{sql.Table}.{id} {direction} "
+            : $"ORDER BY {DapperStatements.Quote(sql.Dialect, query.SortBy switch
+            {
+                MediaSortBy.FileName => "FileName",
+                MediaSortBy.Size     => "Size",
+                _                    => "CreatedAt"
+            })} {direction}, {id} {direction} ";
 
         var statement = sql.Select + where + order + DapperStatements.Limit(sql.Dialect, query.Take, query.Skip);
 
@@ -166,7 +177,7 @@ public sealed class DapperMediaStore(
         ArgumentNullException.ThrowIfNull(query);
 
         var sql        = Sql;
-        var (where, p) = BuildWhere(sql.Dialect, query);
+        var (where, p) = BuildWhere(sql, query);
         var statement  = $"SELECT COUNT(*) FROM {sql.Table} {where}";
 
         return await UnitOfWork.RunAsync(
@@ -188,8 +199,9 @@ public sealed class DapperMediaStore(
     /// two cannot drift — a total that does not match the rows it is a total of is worse than no
     /// total at all.
     /// </summary>
-    private static (string Where, DynamicParameters Parameters) BuildWhere(SqlDialect dialect, MediaQuery query)
+    private static (string Where, DynamicParameters Parameters) BuildWhere(DapperStatements sql, MediaQuery query)
     {
+        var dialect    = sql.Dialect;
         var clauses    = new List<string>();
         var parameters = new DynamicParameters();
 
@@ -198,16 +210,31 @@ public sealed class DapperMediaStore(
         if (!query.IncludeDeleted)
             clauses.Add($"{C("DeletedAt")} IS NULL");
 
+        // EXISTS rather than a join: a file linked to several of this entity's roles must come back
+        // once, and EXISTS says so without a DISTINCT over every selected column — which on
+        // SQL Server would also have to contend with the NVARCHAR(max) columns a DISTINCT cannot
+        // include.
+        //
+        // Only when an owner is asked for. An unfiltered listing never touches the attachment table,
+        // which is what keeps unattached files — uploads waiting for the form that will claim them —
+        // in the library rather than quietly out of it.
         if (query.OwnerEntityName is { } ownerName)
         {
-            clauses.Add($"{C("OwnerEntityName")} = @OwnerEntityName");
+            clauses.Add($"EXISTS ({Correlated(sql, query, "1")})");
             parameters.Add("OwnerEntityName", ownerName);
+
+            if (query.OwnerEntityId is { } ownerId)
+                parameters.Add("OwnerEntityId", ownerId);
+
+            if (query.Role is { } role)
+                parameters.Add("Role", role);
         }
 
-        if (query.OwnerEntityId is { } ownerId)
+        if (query.Unattached)
         {
-            clauses.Add($"{C("OwnerEntityId")} = @OwnerEntityId");
-            parameters.Add("OwnerEntityId", ownerId);
+            clauses.Add(
+                $"NOT EXISTS (SELECT 1 FROM {sql.AttachmentTable} {AttachmentAlias} " +
+                $"WHERE {AttachmentAlias}.{C("MediaFileId")} = {sql.Table}.{C("Id")})");
         }
 
         if (query.Category is { } category)
@@ -294,6 +321,333 @@ public sealed class DapperMediaStore(
         .Replace("%", "\\%", StringComparison.Ordinal)
         .Replace("_", "\\_", StringComparison.Ordinal);
 
+    /// <summary>The alias the attachment table takes inside a subquery.</summary>
+    private const string AttachmentAlias = "ma";
+
+    /// <summary>
+    /// A subquery over the attachments a query's owner filter matches, correlated to the file row
+    /// outside it. One place, so the EXISTS that joins and the MIN()s that order cannot end up
+    /// talking about different sets of links.
+    /// </summary>
+    private static string Correlated(DapperStatements sql, MediaQuery query, string projection)
+    {
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        var where = $"{AttachmentAlias}.{C("MediaFileId")} = {sql.Table}.{C("Id")}"
+                    + $" AND {AttachmentAlias}.{C("OwnerEntityName")} = @OwnerEntityName";
+
+        if (query.OwnerEntityId is not null)
+            where += $" AND {AttachmentAlias}.{C("OwnerEntityId")} = @OwnerEntityId";
+
+        if (query.Role is not null)
+            where += $" AND {AttachmentAlias}.{C("Role")} = @Role";
+
+        return $"SELECT {projection} FROM {sql.AttachmentTable} {AttachmentAlias} WHERE {where}";
+    }
+
+    /// <inheritdoc/>
+    public async Task AddAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        try
+        {
+            await ExecuteAsync(Sql.InsertAttachment, Parameters(attachment), ct).ConfigureAwait(false);
+        }
+        catch (DbException ex)
+        {
+            if (!await IsDuplicateAttachmentAsync(ex, attachment, ct).ConfigureAwait(false))
+                throw;
+
+            throw new MediaConflictException(
+                $"Media file '{attachment.MediaFileId}' is already attached to {attachment.OwnerEntityName} " +
+                $"{attachment.OwnerEntityId} as '{attachment.Role}'.",
+                ex);
+        }
+    }
+
+    /// <summary>
+    /// Whether the insert failed because that exact link is already there, read the same way
+    /// <see cref="IsDuplicateAsync"/> reads it and for the same reasons: SQLSTATE on PostgreSQL,
+    /// because a failed statement leaves its transaction aborted and the probe below could not run;
+    /// a probe on the other two, whose transactions survive a constraint violation and whose error
+    /// codes live on provider types this package does not reference.
+    /// </summary>
+    private async Task<bool> IsDuplicateAttachmentAsync(DbException ex, MediaAttachment attachment, CancellationToken ct)
+    {
+        if (Dialect == SqlDialect.PostgreSql)
+            return string.Equals(ex.SqlState, PostgresUniqueViolation, StringComparison.Ordinal);
+
+        try
+        {
+            var sql       = Sql;
+            var statement = $"{sql.SelectAttachments}WHERE {DapperStatements.Quote(sql.Dialect, "MediaFileId")} = @MediaFileId " +
+                            $"AND {sql.OwnerPredicate} AND {sql.RolePredicate}";
+
+            var found = await QueryAttachmentsAsync(
+                statement,
+                new
+                {
+                    attachment.MediaFileId,
+                    attachment.OwnerEntityName,
+                    attachment.OwnerEntityId,
+                    attachment.Role
+                }, ct).ConfigureAwait(false);
+
+            return found.Count > 0;
+        }
+        catch (DbException)
+        {
+            return false;
+        }
+    }
+
+    /// <inheritdoc/>
+    public async Task<bool> RemoveAttachmentAsync(Guid attachmentId, CancellationToken ct = default) =>
+        await ExecuteAsync(Sql.DeleteAttachment, new { Id = attachmentId }, ct).ConfigureAwait(false) > 0;
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var sql       = Sql;
+        var statement = $"DELETE FROM {sql.AttachmentTable} WHERE {sql.OwnerPredicate}"
+                        + (role is null ? string.Empty : $" AND {sql.RolePredicate}");
+
+        return await ExecuteAsync(
+            statement,
+            new { OwnerEntityName = owner.EntityName, OwnerEntityId = owner.EntityId, Role = role },
+            ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> RemoveAttachmentsOfFileAsync(Guid mediaFileId, CancellationToken ct = default) =>
+        await ExecuteAsync(Sql.DeleteAttachmentsOfFile, new { MediaFileId = mediaFileId }, ct).ConfigureAwait(false);
+
+    /// <inheritdoc/>
+    public async Task UpdateAttachmentAsync(MediaAttachment attachment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachment);
+
+        var affected = await ExecuteAsync(
+            Sql.UpdateAttachment,
+            new { attachment.Id, attachment.Role, attachment.SortOrder },
+            ct).ConfigureAwait(false);
+
+        if (affected == 0)
+            throw new MediaNotFoundException(attachment.Id);
+    }
+
+    /// <inheritdoc/>
+    public async Task UpdateAttachmentsAsync(
+        IReadOnlyCollection<MediaAttachment> attachments, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(attachments);
+
+        if (attachments.Count == 0)
+            return;
+
+        // Dapper's multi-exec: one command, prepared once, executed per row on the connection
+        // already open — and, where the application has one, inside its transaction, so a reorder
+        // commits whole or not at all. It is not one round trip the way the EF Core and MongoDB
+        // stores manage, because a single UPDATE covering every row means a CASE expression built
+        // per call, which cannot be cached with the rest of the statements and runs into the
+        // provider's parameter limit on a large gallery. The round trips are on one open
+        // connection and a reorder is a user's drag, not a hot read.
+        var affected = await ExecuteAsync(
+            Sql.UpdateAttachment,
+            attachments.Select(a => new { a.Id, a.Role, a.SortOrder }).ToArray(),
+            ct).ConfigureAwait(false);
+
+        if (affected >= attachments.Count)
+            return;
+
+        // One of them is gone. Which one is worth the extra read — the caller is holding rows it
+        // listed a moment ago and needs to know which has since been detached — and it is an error
+        // path, so the cost buys a usable message rather than slowing anything down.
+        var ids     = attachments.Select(a => a.Id).ToArray();
+        var present = await FindPresentAttachmentsAsync(ids, ct).ConfigureAwait(false);
+        var missing = ids.Except(present).ToArray();
+
+        throw new MediaNotFoundException(missing.Length > 0 ? missing[0] : Guid.Empty);
+    }
+
+    /// <summary>
+    /// Which of <paramref name="ids"/> still have an attachment row, in as few statements as the
+    /// batch size allows.
+    /// </summary>
+    private async Task<HashSet<Guid>> FindPresentAttachmentsAsync(Guid[] ids, CancellationToken ct)
+    {
+        var sql     = Sql;
+        var present = new HashSet<Guid>();
+
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        foreach (var batch in ids.Distinct().Chunk(ShareProbeBatch))
+        {
+            // Each id its own parameter, for the reason FindSharedAsync spells out: handed a
+            // collection, Dapper passes it to Npgsql as a single array parameter, which PostgreSQL
+            // accepts after "= ANY(...)" and rejects as a syntax error after IN.
+            var parameters = new DynamicParameters();
+            var names      = new string[batch.Length];
+
+            for (var i = 0; i < batch.Length; i++)
+            {
+                names[i] = "@id" + i.ToString(CultureInfo.InvariantCulture);
+                parameters.Add("id" + i.ToString(CultureInfo.InvariantCulture), batch[i]);
+            }
+
+            var statement =
+                $"SELECT {C("Id")} FROM {sql.AttachmentTable} WHERE {C("Id")} IN ({string.Join(", ", names)})";
+
+            // Read by hand, as FindSharedAsync does: the id is a Guid on SQL Server and PostgreSQL
+            // and text on SQLite, and Query<Guid> cannot bridge that.
+            var found = await UnitOfWork.RunAsync(
+                _connection,
+                async () =>
+                {
+                    await using var reader = await _connection.ExecuteReaderAsync(
+                        new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                        ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+
+                    var read = new List<Guid>();
+
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        read.Add(MediaFileMapper.Guid(reader, 0));
+
+                    return read;
+                },
+                ct).ConfigureAwait(false);
+
+            present.UnionWith(found);
+        }
+
+        return present;
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsOfFileAsync(
+        Guid mediaFileId, CancellationToken ct = default) =>
+        await QueryAttachmentsAsync(Sql.SelectAttachmentsOfFile, new { MediaFileId = mediaFileId }, ct)
+            .ConfigureAwait(false);
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaAttachment>> ListAttachmentsAsync(
+        MediaOwner owner, string? role = null, CancellationToken ct = default)
+    {
+        var sql = Sql;
+
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        var statement = $"{sql.SelectAttachments}WHERE {sql.OwnerPredicate}"
+                        + (role is null ? string.Empty : $" AND {sql.RolePredicate}")
+                        + $" ORDER BY {C("Role")} ASC, {C("SortOrder")} ASC, {C("Id")} ASC";
+
+        return await QueryAttachmentsAsync(
+            statement,
+            new { OwnerEntityName = owner.EntityName, OwnerEntityId = owner.EntityId, Role = role },
+            ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Ids per statement. Under SQL Server's 2,100-parameter ceiling and SQLite's default 999, with
+    /// room to spare — an entity with more attachments than this is unusual, and it costs it one
+    /// extra round trip rather than a failed statement.
+    /// </summary>
+    private const int ShareProbeBatch = 500;
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlySet<Guid>> FindSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaFileIds);
+
+        var shared = new HashSet<Guid>();
+
+        if (mediaFileIds.Count == 0)
+            return shared;
+
+        var sql = Sql;
+
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        // Batched, and one statement per batch rather than a probe per file: deleting a product with
+        // fifty images must not become fifty round trips.
+        foreach (var batch in mediaFileIds.Distinct().Chunk(ShareProbeBatch))
+        {
+            // The ids are bound one parameter at a time rather than left to Dapper's IN expansion.
+            // Dapper asks the provider whether it supports arrays, and for Npgsql the answer is yes:
+            // it then passes the whole list as a single array parameter, which PostgreSQL will take
+            // only as "= ANY(@ids)" and rejects as a syntax error after IN. Naming each id keeps one
+            // statement correct on all three engines instead of one spelling per dialect.
+            var parameters = new DynamicParameters();
+            parameters.Add("OwnerEntityName", excluding.EntityName);
+            parameters.Add("OwnerEntityId", excluding.EntityId);
+
+            var names = new string[batch.Length];
+
+            for (var i = 0; i < batch.Length; i++)
+            {
+                names[i] = "@id" + i.ToString(CultureInfo.InvariantCulture);
+                parameters.Add("id" + i.ToString(CultureInfo.InvariantCulture), batch[i]);
+            }
+
+            var statement =
+                $"SELECT DISTINCT {C("MediaFileId")} FROM {sql.AttachmentTable} " +
+                $"WHERE {C("MediaFileId")} IN ({string.Join(", ", names)}) " +
+                $"AND ({C("OwnerEntityName")} <> @OwnerEntityName OR {C("OwnerEntityId")} <> @OwnerEntityId)";
+
+            // Read through the reader rather than Dapper's own mapping: the id comes back as a Guid
+            // on SQL Server and PostgreSQL and as text on SQLite, and Query<Guid> cannot make that
+            // conversion — the same reason MediaFileMapper reads every column by hand.
+            var found = await UnitOfWork.RunAsync(
+                _connection,
+                async () =>
+                {
+                    await using var reader = await _connection.ExecuteReaderAsync(
+                        new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                        ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+
+                    var ids = new List<Guid>();
+
+                    while (await reader.ReadAsync(ct).ConfigureAwait(false))
+                        ids.Add(MediaFileMapper.Guid(reader, 0));
+
+                    return ids;
+                },
+                ct).ConfigureAwait(false);
+
+            shared.UnionWith(found);
+        }
+
+        return shared;
+    }
+
+    private Task<IReadOnlyList<MediaAttachment>> QueryAttachmentsAsync(
+        string sql, object parameters, CancellationToken ct) =>
+        UnitOfWork.RunAsync(
+            _connection,
+            async () =>
+            {
+                await using var reader = await _connection.ExecuteReaderAsync(
+                    new CommandDefinition(sql, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                    ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+
+                return (IReadOnlyList<MediaAttachment>)await MediaAttachmentMapper.ReadAllAsync(reader, ct).ConfigureAwait(false);
+            },
+            ct);
+
+    private static object Parameters(MediaAttachment attachment) => new
+    {
+        attachment.Id,
+        attachment.MediaFileId,
+        attachment.OwnerEntityName,
+        attachment.OwnerEntityId,
+        attachment.Role,
+        attachment.SortOrder,
+        attachment.CreatedAt
+    };
+
     private static object Parameters(MediaFile file) => new
     {
         file.Id,
@@ -304,8 +658,6 @@ public sealed class DapperMediaStore(
         file.StorageContainer,
         file.StoragePath,
         file.Checksum,
-        file.OwnerEntityName,
-        file.OwnerEntityId,
         file.Category,
         file.Tags,
         file.Metadata,

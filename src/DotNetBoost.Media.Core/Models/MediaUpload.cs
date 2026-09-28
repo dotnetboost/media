@@ -39,10 +39,17 @@ public sealed record MediaUpload
     public string? UploadedBy { get; init; }
 
     /// <summary>
-    /// The entity to attach the file to. Set by <c>IMediaManager.For(entity)</c>; assign it
-    /// directly only when you hold the name and key rather than the object.
+    /// The role to attach the file under when it is uploaded through
+    /// <c>IMediaManager.For(entity).UploadAsync(...)</c> — <c>primary</c>, <c>gallery</c>, or
+    /// whatever the application means. Ignored by a plain <c>UploadAsync</c>, which attaches the
+    /// file to nothing.
+    /// <para>
+    /// There is deliberately no owner here. An upload stores bytes; what uses them is a
+    /// <see cref="MediaAttachment"/>, and routing it through the accessor is what keeps the two
+    /// from drifting apart.
+    /// </para>
     /// </summary>
-    public MediaOwner? Owner { get; init; }
+    public string? Role { get; init; }
 
     /// <summary>
     /// Writes to a named backend instead of the default one — for a single upload that has to
@@ -62,7 +69,8 @@ public readonly record struct MediaOwner(string EntityName, string EntityId);
 /// DotNetBoost.MultiLingual, because the fields here are independent of one another.
 /// <para>
 /// The bytes, their size, their checksum and their location are not here: they are established
-/// by the upload and are not editable. Replacing content means a new upload.
+/// by the upload and are not editable. Replacing content means a new upload. Nor are attachments —
+/// those are rows of their own, added and removed through <c>IMediaManager.For(entity)</c>.
 /// </para>
 /// </summary>
 public sealed record MediaUpdate
@@ -79,12 +87,8 @@ public sealed record MediaUpdate
     /// <summary>Replaces the file's metadata outright. Pass an empty dictionary to clear it.</summary>
     public IReadOnlyDictionary<string, string>? Metadata { get; init; }
 
-    /// <summary>
-    /// Attaches the file to an entity, or — with <see cref="ClearOwner"/> — detaches it. A record
-    /// cannot tell "not supplied" from "null" in one property, so detaching has its own flag.
-    /// </summary>
-    public MediaOwner? Owner { get; init; }
-
-    /// <summary>Detaches the file from whatever it was attached to. Ignored when <see cref="Owner"/> is set.</summary>
-    public bool ClearOwner { get; init; }
+    // Attaching is not a metadata patch. It creates or removes a MediaAttachment row, which the
+    // accessor returned by IMediaManager.For(entity) owns — see its AddAsync, SetAsync and
+    // DetachAsync. Leaving owner fields here would offer a second, quieter way to do it that could
+    // only ever express one owner.
 }

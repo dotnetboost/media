@@ -43,6 +43,15 @@ public interface IMediaStorageProvider
     /// <summary>
     /// Opens the object at <paramref name="path"/> in <paramref name="container"/> for reading.
     /// The caller disposes the stream.
+    /// <para>
+    /// <b>Return a seekable stream wherever the backend can manage one.</b> HTTP <c>Range</c>
+    /// support is built on it: ASP.NET Core serves a partial response only when the stream it is
+    /// handed can report its length, and falls back to sending the whole object with a <c>200</c>
+    /// when it cannot. A backend that can only read forward therefore silently loses range
+    /// requests, and with them seeking in audio and video. All three shipped backends are
+    /// seekable — the S3 one wraps its forward-only response in a stream that re-requests a range
+    /// when the reader moves.
+    /// </para>
     /// </summary>
     /// <exception cref="MediaContentMissingException">There is nothing at that path.</exception>
     /// <exception cref="MediaStorageException">The backend could not be read.</exception>

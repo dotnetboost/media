@@ -19,7 +19,7 @@ public interface IMediaStorageProvider
 }
 ```
 
-## Six things to get right
+## Seven things to get right
 
 **1. `Name` is permanent.** It is stored in every row your backend writes. Changing it in a later
 release strands every file already there.
@@ -39,7 +39,18 @@ var safe = MediaPaths.Validate(write.Path);
 not known up front. Hand it to your SDK's streaming upload. Buffering turns a 2 GB upload into
 2 GB of memory and defeats the size limit, which is enforced *as the stream is read*.
 
-**5. Throw the right exception.**
+**5. Return a seekable stream from `OpenReadAsync` if you possibly can.** HTTP `Range` is built
+on it: ASP.NET Core serves a partial response only when the stream can report its `Length` and
+seek, and answers the whole object with a `200` when it cannot. A forward-only stream therefore
+loses range requests *silently* — no error, just a client that downloads the whole file every time
+it seeks in a video.
+
+If your SDK only reads forward, do what the S3 backend does: note the object's length when you
+open it, let `Seek` move nothing but a counter, and issue a fresh ranged request when a read lands
+somewhere the open response cannot reach. `StorageContractTests` asserts both the seekability and
+the windows, so a backend added there is checked for it.
+
+**6. Throw the right exception.**
 
 | | |
 |---|---|
@@ -50,7 +61,7 @@ not known up front. Hand it to your SDK's streaming upload. Buffering turns a 2 
 Let `MediaContentMissingException` through unwrapped: the API package turns it into a 404, and
 wrapping it in a `MediaStorageException` would make a missing file look like an outage.
 
-**6. Return `null` from `GetUrlAsync`** when you have no direct link. That is the honest answer,
+**7. Return `null` from `GetUrlAsync`** when you have no direct link. That is the honest answer,
 and the caller falls back to streaming through the application. A URL that would 404 for the
 client is worse than none.
 

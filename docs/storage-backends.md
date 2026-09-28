@@ -87,6 +87,13 @@ services.AddMedia()
 Uploads go through the SDK's transfer utility, which switches to a multipart upload on its own for
 large files. Downloads can be handed out as pre-signed URLs.
 
+S3's own response stream only reads forward, so `OpenReadAsync` wraps it: the object's length
+comes from the response that opened it, seeking moves a counter, and a read that lands where the
+open response cannot reach issues a fresh ranged `GET`. That is what makes `Range` — and therefore
+seeking in audio and video — work on this backend rather than silently turning into a `200`
+carrying the whole object. A straight download still costs exactly one request, and so does the
+`bytes=0-` a media element asks for first.
+
 **This backend never creates a bucket.** On S3 that is a region-bound, globally-unique,
 account-level decision with public-access and encryption settings attached, and a library guessing
 at those is how a bucket ends up world-readable. Create it in your infrastructure code; the
@@ -141,6 +148,7 @@ migrator, and [limitations.md](limitations.md) says why.
 |---|---|---|---|
 | Several application hosts | ✗ unless shared storage | ✓ | ✓ |
 | Direct client downloads | only if a web server serves the directory | ✓ SAS | ✓ pre-signed |
+| `Range` through your application | ✓ | ✓ | ✓ re-requests a range on seek |
 | Extra dependency | none | `Azure.Storage.Blobs` | `AWSSDK.S3` |
 | Creates its container | ✓ the directory | ✓ private | ✗ by design |
 | Good for | development, single host | Azure | AWS, and any S3-compatible store |

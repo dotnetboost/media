@@ -35,8 +35,6 @@ public abstract class StoreContractTests : IAsyncLifetime
         string fileName = "photo.png",
         string? category = null,
         string? tags = null,
-        string? owner = null,
-        string? ownerId = null,
         string? checksum = null,
         long size = 100,
         int minutesLate = 0,
@@ -51,17 +49,33 @@ public abstract class StoreContractTests : IAsyncLifetime
             StorageContainer = "test",
             StoragePath      = $"2026/09/27/{Guid.NewGuid():N}.png",
             Checksum         = checksum,
-            OwnerEntityName  = owner,
-            OwnerEntityId    = ownerId,
             Category         = category,
             Tags             = tags,
             CreatedAt        = Origin.AddMinutes(minutesLate)
         };
 
+    protected static MediaAttachment Link(
+        Guid mediaFileId,
+        string owner = "Product",
+        string ownerId = "1",
+        string role = MediaRoles.Default,
+        int sortOrder = 0,
+        int minutesLate = 0) =>
+        new()
+        {
+            Id              = Guid.NewGuid(),
+            MediaFileId     = mediaFileId,
+            OwnerEntityName = owner,
+            OwnerEntityId   = ownerId,
+            Role            = role,
+            SortOrder       = sortOrder,
+            CreatedAt       = Origin.AddMinutes(minutesLate)
+        };
+
     [Fact]
     public async Task Add_then_Find_round_trips_every_column()
     {
-        var row = Row("report.pdf", "invoices", MediaTags.Join(["paid", "2026"]), "Invoice", "77", "abc123", 4096, contentType: "application/pdf");
+        var row = Row("report.pdf", "invoices", MediaTags.Join(["paid", "2026"]), "abc123", 4096, contentType: "application/pdf");
         row.Metadata   = """{"pages":"3"}""";
         row.UploadedBy = "alice@example.com";
 
@@ -77,8 +91,6 @@ public abstract class StoreContractTests : IAsyncLifetime
         Assert.Equal(row.StorageContainer, read.StorageContainer);
         Assert.Equal(row.StoragePath, read.StoragePath);
         Assert.Equal(row.Checksum, read.Checksum);
-        Assert.Equal(row.OwnerEntityName, read.OwnerEntityName);
-        Assert.Equal(row.OwnerEntityId, read.OwnerEntityId);
         Assert.Equal(row.Category, read.Category);
         Assert.Equal(row.Tags, read.Tags);
         Assert.Equal(row.Metadata, read.Metadata);
@@ -115,8 +127,6 @@ public abstract class StoreContractTests : IAsyncLifetime
         read.Category         = "archive";
         read.Tags             = MediaTags.Join(["kept"]);
         read.Metadata         = """{"a":"1"}""";
-        read.OwnerEntityName  = "Product";
-        read.OwnerEntityId    = "9";
         read.UpdatedAt        = Origin.AddHours(1);
         await Store.UpdateAsync(read);
 
@@ -126,8 +136,6 @@ public abstract class StoreContractTests : IAsyncLifetime
         Assert.Equal("archive", after.Category);
         Assert.Equal(",kept,", after.Tags);
         Assert.Equal("""{"a":"1"}""", after.Metadata);
-        Assert.Equal("Product", after.OwnerEntityName);
-        Assert.Equal("9", after.OwnerEntityId);
         Assert.Equal(Origin.AddHours(1), after.UpdatedAt);
     }
 
@@ -204,10 +212,18 @@ public abstract class StoreContractTests : IAsyncLifetime
     [Fact]
     public async Task Query_filters_by_owner()
     {
-        await Store.AddAsync(Row("a.png", owner: "Product", ownerId: "1"));
-        await Store.AddAsync(Row("b.png", owner: "Product", ownerId: "2"));
-        await Store.AddAsync(Row("c.png", owner: "Customer", ownerId: "1"));
+        var a = Row("a.png");
+        var b = Row("b.png");
+        var c = Row("c.png");
+
+        await Store.AddAsync(a);
+        await Store.AddAsync(b);
+        await Store.AddAsync(c);
         await Store.AddAsync(Row("d.png"));
+
+        await Store.AddAttachmentAsync(Link(a.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(b.Id, "Product", "2"));
+        await Store.AddAttachmentAsync(Link(c.Id, "Customer", "1"));
 
         var rows = await Store.QueryAsync(new MediaQuery { OwnerEntityName = "Product", OwnerEntityId = "1" });
 
@@ -435,4 +451,357 @@ public abstract class StoreContractTests : IAsyncLifetime
         Assert.Equal(Origin, read.CreatedAt);
         Assert.Equal(Origin.AddHours(2), read.UpdatedAt);
     }
+
+    [Fact]
+    public async Task Attachment_round_trips_every_column()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var link = Link(row.Id, "Product", "42", "gallery", sortOrder: 3);
+        await Store.AddAttachmentAsync(link);
+
+        var read = Assert.Single(await Store.ListAttachmentsOfFileAsync(row.Id));
+
+        Assert.Equal(link.Id, read.Id);
+        Assert.Equal(row.Id, read.MediaFileId);
+        Assert.Equal("Product", read.OwnerEntityName);
+        Assert.Equal("42", read.OwnerEntityId);
+        Assert.Equal("gallery", read.Role);
+        Assert.Equal(3, read.SortOrder);
+        Assert.Equal(Origin, read.CreatedAt);
+        Assert.Equal(DateTimeKind.Utc, read.CreatedAt.Kind);
+    }
+
+    [Fact]
+    public async Task One_file_can_be_attached_to_two_entities()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "2"));
+
+        Assert.Equal(2, (await Store.ListAttachmentsOfFileAsync(row.Id)).Count);
+
+        Assert.Single(await Store.QueryAsync(
+            new MediaQuery { OwnerEntityName = "Product", OwnerEntityId = "1" }));
+        Assert.Single(await Store.QueryAsync(
+            new MediaQuery { OwnerEntityName = "Product", OwnerEntityId = "2" }));
+    }
+
+    [Fact]
+    public async Task A_file_attached_twice_to_one_entity_is_returned_once()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, role: "primary"));
+        await Store.AddAttachmentAsync(Link(row.Id, role: "seo"));
+
+        var rows = await Store.QueryAsync(new MediaQuery { OwnerEntityName = "Product", OwnerEntityId = "1" });
+
+        Assert.Single(rows);
+        Assert.Equal(1, await Store.CountAsync(new MediaQuery { OwnerEntityName = "Product", OwnerEntityId = "1" }));
+    }
+
+    [Fact]
+    public async Task Attaching_the_same_file_twice_in_one_role_is_refused()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, role: "gallery"));
+
+        await Assert.ThrowsAsync<MediaConflictException>(
+            () => Store.AddAttachmentAsync(Link(row.Id, role: "gallery")));
+    }
+
+    [Fact]
+    public async Task Query_filters_by_role()
+    {
+        var hero = Row("hero.png");
+        var shot = Row("shot.png");
+
+        await Store.AddAsync(hero);
+        await Store.AddAsync(shot);
+
+        await Store.AddAttachmentAsync(Link(hero.Id, role: "primary"));
+        await Store.AddAttachmentAsync(Link(shot.Id, role: "gallery"));
+
+        var rows = await Store.QueryAsync(new MediaQuery
+        {
+            OwnerEntityName = "Product",
+            OwnerEntityId   = "1",
+            Role            = "primary"
+        });
+
+        Assert.Equal("hero.png", Assert.Single(rows).FileName);
+    }
+
+    [Fact]
+    public async Task Query_sorts_by_the_entitys_own_order()
+    {
+        var first  = Row("first.png");
+        var second = Row("second.png");
+        var third  = Row("third.png");
+
+        // Added in an order that is neither the sort order nor its reverse, so a store that ignores
+        // SortOrder and falls back to CreatedAt or the id cannot pass by accident.
+        await Store.AddAsync(second);
+        await Store.AddAsync(third);
+        await Store.AddAsync(first);
+
+        await Store.AddAttachmentAsync(Link(second.Id, role: "gallery", sortOrder: 1));
+        await Store.AddAttachmentAsync(Link(third.Id, role: "gallery", sortOrder: 2));
+        await Store.AddAttachmentAsync(Link(first.Id, role: "gallery", sortOrder: 0));
+
+        var rows = await Store.QueryAsync(new MediaQuery
+        {
+            OwnerEntityName = "Product",
+            OwnerEntityId   = "1",
+            Role            = "gallery",
+            SortBy          = MediaSortBy.SortOrder,
+            Descending      = false
+        });
+
+        Assert.Equal(["first.png", "second.png", "third.png"], rows.Select(r => r.FileName));
+    }
+
+    [Fact]
+    public async Task Query_finds_the_files_nothing_is_attached_to()
+    {
+        var loose = Row("loose.png");
+        var used  = Row("used.png");
+
+        await Store.AddAsync(loose);
+        await Store.AddAsync(used);
+        await Store.AddAttachmentAsync(Link(used.Id));
+
+        var rows = await Store.QueryAsync(new MediaQuery { Unattached = true });
+
+        Assert.Equal("loose.png", Assert.Single(rows).FileName);
+    }
+
+    [Fact]
+    public async Task An_unfiltered_query_returns_attached_and_unattached_files_alike()
+    {
+        var loose = Row("loose.png");
+        var used  = Row("used.png");
+
+        await Store.AddAsync(loose);
+        await Store.AddAsync(used);
+        await Store.AddAttachmentAsync(Link(used.Id));
+
+        Assert.Equal(2, await Store.CountAsync(new MediaQuery()));
+    }
+
+    [Fact]
+    public async Task ListAttachments_returns_an_owners_links_by_role_then_position()
+    {
+        var a = Row("a.png");
+        var b = Row("b.png");
+        var c = Row("c.png");
+
+        await Store.AddAsync(a);
+        await Store.AddAsync(b);
+        await Store.AddAsync(c);
+
+        await Store.AddAttachmentAsync(Link(b.Id, role: "gallery", sortOrder: 1));
+        await Store.AddAttachmentAsync(Link(c.Id, role: "primary", sortOrder: 0));
+        await Store.AddAttachmentAsync(Link(a.Id, role: "gallery", sortOrder: 0));
+
+        var links = await Store.ListAttachmentsAsync(new MediaOwner("Product", "1"));
+
+        Assert.Equal([a.Id, b.Id, c.Id], links.Select(l => l.MediaFileId));
+
+        var gallery = await Store.ListAttachmentsAsync(new MediaOwner("Product", "1"), "gallery");
+        Assert.Equal([a.Id, b.Id], gallery.Select(l => l.MediaFileId));
+    }
+
+    [Fact]
+    public async Task ListAttachments_does_not_reach_another_owner()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "2"));
+
+        Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "1")));
+    }
+
+    [Fact]
+    public async Task UpdateAttachment_writes_the_new_position()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var link = Link(row.Id, role: "gallery");
+        await Store.AddAttachmentAsync(link);
+
+        var read = Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "1")));
+        read.SortOrder = 7;
+        await Store.UpdateAttachmentAsync(read);
+
+        var after = Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "1")));
+        Assert.Equal(7, after.SortOrder);
+    }
+
+    [Fact]
+    public async Task UpdateAttachment_throws_for_a_link_that_is_not_there()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Assert.ThrowsAsync<MediaNotFoundException>(() => Store.UpdateAttachmentAsync(Link(row.Id)));
+    }
+
+    /// <summary>
+    /// What a reorder saves. Every row in one call, so a store can do it in one command and one
+    /// transaction rather than one of each per image.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAttachments_writes_every_new_position_at_once()
+    {
+        var owner = new MediaOwner("Product", "1");
+        var links = new List<MediaAttachment>();
+
+        for (var i = 0; i < 5; i++)
+        {
+            var row = Row();
+            await Store.AddAsync(row);
+
+            var link = Link(row.Id, role: "gallery", sortOrder: i, minutesLate: i);
+            await Store.AddAttachmentAsync(link);
+            links.Add(link);
+        }
+
+        // Reversed, which is the case that matters: every row moves, and none of the new
+        // positions is free, so a store writing them one at a time would pass through states
+        // where two links share a position.
+        var reordered = await Store.ListAttachmentsAsync(owner, "gallery");
+        var wanted    = reordered.Reverse().ToArray();
+
+        for (var i = 0; i < wanted.Length; i++)
+            wanted[i].SortOrder = i;
+
+        await Store.UpdateAttachmentsAsync(wanted);
+
+        var after = await Store.ListAttachmentsAsync(owner, "gallery");
+
+        Assert.Equal(
+            links.Select(l => l.MediaFileId).Reverse(),
+            after.Select(a => a.MediaFileId));
+
+        Assert.Equal([0, 1, 2, 3, 4], after.Select(a => a.SortOrder));
+    }
+
+    [Fact]
+    public async Task UpdateAttachments_does_nothing_when_given_nothing() =>
+        await Store.UpdateAttachmentsAsync([]);
+
+    /// <summary>
+    /// A batch naming a link that has since been detached is reported, and reported as the
+    /// missing link rather than as some generic write failure.
+    /// </summary>
+    [Fact]
+    public async Task UpdateAttachments_throws_for_a_link_that_is_not_there()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var present = Link(row.Id, role: "gallery");
+        await Store.AddAttachmentAsync(present);
+
+        var absent = Link(row.Id, role: "gallery", sortOrder: 1);
+
+        var thrown = await Assert.ThrowsAsync<MediaNotFoundException>(
+            () => Store.UpdateAttachmentsAsync([present, absent]));
+
+        Assert.Equal(absent.Id, thrown.Id);
+    }
+
+    [Fact]
+    public async Task RemoveAttachment_removes_one_link_and_leaves_the_file()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var link = Link(row.Id);
+        await Store.AddAttachmentAsync(link);
+
+        Assert.True(await Store.RemoveAttachmentAsync(link.Id));
+        Assert.False(await Store.RemoveAttachmentAsync(link.Id));
+
+        Assert.Empty(await Store.ListAttachmentsOfFileAsync(row.Id));
+        Assert.NotNull(await Store.FindAsync(row.Id));
+    }
+
+    [Fact]
+    public async Task RemoveAttachments_takes_one_owner_or_one_role()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "primary"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "gallery"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "2", "primary"));
+
+        Assert.Equal(1, await Store.RemoveAttachmentsAsync(new MediaOwner("Product", "1"), "gallery"));
+        Assert.Equal(1, await Store.RemoveAttachmentsAsync(new MediaOwner("Product", "1")));
+
+        // Product 2 was never in scope.
+        Assert.Single(await Store.ListAttachmentsOfFileAsync(row.Id));
+        Assert.NotNull(await Store.FindAsync(row.Id));
+    }
+
+    [Fact]
+    public async Task RemoveAttachmentsOfFile_clears_every_owner()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "2"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Customer", "1"));
+
+        Assert.Equal(3, await Store.RemoveAttachmentsOfFileAsync(row.Id));
+        Assert.Empty(await Store.ListAttachmentsOfFileAsync(row.Id));
+    }
+
+    [Fact]
+    public async Task FindShared_names_the_files_another_owner_still_holds()
+    {
+        var shared = Row("shared.png");
+        var mine   = Row("mine.png");
+
+        await Store.AddAsync(shared);
+        await Store.AddAsync(mine);
+
+        await Store.AddAttachmentAsync(Link(shared.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(mine.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(shared.Id, "Product", "2"));
+
+        var found = await Store.FindSharedAsync([shared.Id, mine.Id], new MediaOwner("Product", "1"));
+
+        Assert.Equal([shared.Id], found);
+    }
+
+    [Fact]
+    public async Task FindShared_ignores_the_owners_own_other_roles()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        // Attached twice, but to nobody else: this entity is still the only holder.
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "primary"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "seo"));
+
+        Assert.Empty(await Store.FindSharedAsync([row.Id], new MediaOwner("Product", "1")));
+    }
+
+    [Fact]
+    public async Task FindShared_of_nothing_is_nothing() =>
+        Assert.Empty(await Store.FindSharedAsync([], new MediaOwner("Product", "1")));
 }

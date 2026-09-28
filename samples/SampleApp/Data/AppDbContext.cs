@@ -16,6 +16,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     /// <summary>Required by <see cref="IMediaDbContext"/>. Application code goes through IMediaManager.</summary>
     public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
 
+    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

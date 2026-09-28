@@ -168,6 +168,48 @@ public static class MediaContentTypes
         };
     }
 
+    /// <summary>
+    /// Media types a browser will run script from when it renders one as a page of its own.
+    /// <para>
+    /// This is the set that turns a file store into a stored-XSS vector. Serve a user's upload
+    /// inline from your own origin as any of these and its script runs <b>in that origin</b>,
+    /// with the session cookie of whoever opened the link — which is why
+    /// <c>MapMediaEndpoints()</c> sends them as downloads rather than inline. SVG is on the list
+    /// and often surprises people: it is an XML document that may carry a <c>&lt;script&gt;</c>,
+    /// not merely a picture.
+    /// </para>
+    /// <para>
+    /// A download disposition does not stop an <c>&lt;img src&gt;</c> or a <c>&lt;video&gt;</c>
+    /// from rendering the file — browsers honour <c>Content-Disposition</c> for navigations, not
+    /// for embedded resources — so an SVG logo still displays where a page asks for it. What it
+    /// stops is the file being opened as a document in its own right.
+    /// </para>
+    /// <para>
+    /// Public because an application serving stored files from its own routes needs the same
+    /// answer, and a hand-written list of these is exactly the kind that goes stale.
+    /// </para>
+    /// </summary>
+    public static bool IsActiveContent(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+            return false;
+
+        var semicolon = contentType.IndexOf(';', StringComparison.Ordinal);
+        var bare      = (semicolon >= 0 ? contentType[..semicolon] : contentType).Trim();
+
+        return bare.Equals("text/html", StringComparison.OrdinalIgnoreCase)
+            || bare.Equals("application/xhtml+xml", StringComparison.OrdinalIgnoreCase)
+            || bare.Equals("image/svg+xml", StringComparison.OrdinalIgnoreCase)
+            // XML renders as a document and can pull in an XSLT stylesheet, which scripts.
+            || bare.Equals("text/xml", StringComparison.OrdinalIgnoreCase)
+            || bare.Equals("application/xml", StringComparison.OrdinalIgnoreCase)
+            || bare.Equals("text/xsl", StringComparison.OrdinalIgnoreCase)
+            // Not script itself: .js is blocked by extension, but the type can still arrive on a
+            // file named something else, and a served script is a script.
+            || bare.Equals("text/javascript", StringComparison.OrdinalIgnoreCase)
+            || bare.Equals("application/javascript", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>Whether a media type is a format that really is a ZIP archive underneath.</summary>
     private static bool IsZipContainer(string contentType) =>
         contentType.StartsWith("application/vnd.openxmlformats-officedocument.", StringComparison.OrdinalIgnoreCase)

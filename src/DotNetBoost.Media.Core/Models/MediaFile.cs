@@ -12,6 +12,11 @@ namespace DotNetBoost.Media.Core.Models;
 /// uploaded it, what is it attached to" without ever touching the storage account.
 /// </para>
 /// <para>
+/// It records nothing about who uses it. A file is linked to the entities that use it by
+/// <see cref="MediaAttachment"/> rows — none, one, or many — so the same upload can serve several
+/// entities at once, in a different role and a different position for each.
+/// </para>
+/// <para>
 /// Not sealed, on purpose: it is an entity type in the application's own context, and EF Core's
 /// lazy-loading proxies refuse a model that contains a sealed entity type.
 /// </para>
@@ -74,19 +79,6 @@ public class MediaFile
     public string? Checksum { get; set; }
 
     /// <summary>
-    /// Logical name of the entity type this file is attached to, e.g. <c>Product</c>, or
-    /// <c>null</c> for a file that stands alone. Set by <c>IMediaManager.For(entity)</c>.
-    /// </summary>
-    public string? OwnerEntityName { get; set; }
-
-    /// <summary>
-    /// The owning entity's primary key, stored as a string so the same table serves <c>int</c>,
-    /// <c>long</c>, <c>Guid</c> and <c>string</c> keys without a schema change. Formatted
-    /// invariantly by <see cref="Metadata.EntityKey.ToKeyString"/>.
-    /// </summary>
-    public string? OwnerEntityId { get; set; }
-
-    /// <summary>
     /// A coarse bucket the application sorts uploads into — <c>avatars</c>, <c>invoices</c>,
     /// <c>product-images</c>. Leads the generated <see cref="StoragePath"/>, so it is also how
     /// the files are laid out in the backend.
@@ -134,4 +126,38 @@ public class MediaFile
 
     /// <summary>True while the file has not been deleted.</summary>
     public bool IsDeleted => DeletedAt is not null;
+}
+
+/// <summary>
+/// The stored form of <see cref="MediaFile.Category"/>, and the rules for writing one down.
+/// <para>
+/// Lower-cased, like <see cref="MediaTags"/> and <see cref="MediaRoles"/>, so that
+/// <c>Product-Images</c> and <c>product-images</c> are one bucket rather than two. That matters
+/// more here than for a tag: the category leads the generated storage path, so two spellings would
+/// also lay the same files out under two directories in the backend.
+/// </para>
+/// </summary>
+public static class MediaCategories
+{
+    /// <summary>The longest a category may be, and the width of the column holding it.</summary>
+    public const int MaxLength = 64;
+
+    /// <summary>
+    /// The stored form of <paramref name="category"/>: trimmed and lower-cased. <c>null</c> and
+    /// whitespace become <c>null</c>, so "no category" is a NULL column rather than an empty string
+    /// that would lead a storage path with a stray separator.
+    /// </summary>
+    /// <exception cref="ArgumentException">Longer than <see cref="MaxLength"/> characters.</exception>
+    public static string? Normalize(string? category)
+    {
+        var trimmed = category?.Trim();
+
+        if (string.IsNullOrEmpty(trimmed))
+            return null;
+
+        if (trimmed.Length > MaxLength)
+            throw new ArgumentException($"Category '{trimmed}' is longer than {MaxLength} characters.", nameof(category));
+
+        return trimmed.ToLowerInvariant();
+    }
 }

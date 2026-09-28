@@ -13,7 +13,11 @@ public sealed record MediaQuery
     private readonly int _take = 50;
     private readonly int _skip;
 
-    /// <summary>Only files attached to this entity type.</summary>
+    /// <summary>
+    /// Only files attached to this entity type, resolved through the attachment table. A file
+    /// attached to the same entity several times — as its <c>primary</c> and its <c>seo</c> image,
+    /// say — is still returned once.
+    /// </summary>
     public string? OwnerEntityName { get; init; }
 
     /// <summary>
@@ -22,6 +26,25 @@ public sealed record MediaQuery
     /// to unrelated types that happen to share it.
     /// </summary>
     public string? OwnerEntityId { get; init; }
+
+    /// <summary>
+    /// Only files attached to that entity in this role — <c>gallery</c>, <c>primary</c>. Requires
+    /// <see cref="OwnerEntityName"/>: a role is a property of a link, so on its own it would match
+    /// every entity's gallery at once.
+    /// </summary>
+    public string? Role { get; init; }
+
+    /// <summary>
+    /// Only files with no attachments at all — uploads nobody ever claimed, and files whose last
+    /// owner let them go.
+    /// <para>
+    /// For a cleanup sweep, and <b>never</b> a default: an unattached file is an ordinary file that
+    /// still appears in every listing, waiting to be attached. Combine it with
+    /// <see cref="CreatedBefore"/> to find the ones old enough to be abandoned rather than merely
+    /// mid-form. Cannot be combined with an owner filter, which asks the opposite question.
+    /// </para>
+    /// </summary>
+    public bool Unattached { get; init; }
 
     /// <summary>Only files in this bucket.</summary>
     public string? Category { get; init; }
@@ -116,7 +139,20 @@ public enum MediaSortBy
     FileName,
 
     /// <summary>The size of the stored bytes.</summary>
-    Size
+    Size,
+
+    /// <summary>
+    /// The order the owning entity put its files in: by role, then by
+    /// <see cref="MediaAttachment.SortOrder"/>. Requires an owner filter, since it sorts on the
+    /// attachment rather than on the file — rejected without one rather than quietly ignored.
+    /// <para>
+    /// A file the entity attached under several roles sorts by its lowest role and its lowest
+    /// position, so that a file appearing once in the results also has one position in them. With
+    /// <see cref="MediaQuery.Role"/> set — the ordering anyone actually wants, one role's gallery — the role is
+    /// fixed and this is exactly that role's <see cref="MediaAttachment.SortOrder"/>.
+    /// </para>
+    /// </summary>
+    SortOrder
 }
 
 /// <summary>One page of a listing, with the total behind it.</summary>
