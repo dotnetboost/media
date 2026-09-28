@@ -115,6 +115,11 @@ Streams the bytes with the stored content type, `Last-Modified`, and an `ETag` â
 checksum, which is a hash of the content and therefore a valid strong tag. That is what makes
 conditional requests and the range-based seeking a video or audio player needs work.
 
+`Range` is served on every shipped backend. It needs a stream that can report its length and seek,
+so a custom `IMediaStorageProvider` that returns a forward-only stream loses partial responses
+silently â€” ASP.NET Core answers the whole object with a `200` instead. See
+[adding-a-backend.md](adding-a-backend.md).
+
 `?download=true` sets `Content-Disposition: attachment` with the original file name. Without it
 the file is served inline, which is what an `<img>` wants.
 

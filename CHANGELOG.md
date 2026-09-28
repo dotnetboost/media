@@ -159,6 +159,22 @@ Unrelated to the above:
   `upload.Owner` on the floor, so the call reported success and attached nothing. It was unfixable
   while a row held one owner; the accessor now stores or deduplicates the bytes and then attaches,
   so identical bytes mean one file and two links.
+- `GET /api/media/{id}/content` honours `Range` on Amazon S3. The endpoint has always asked
+  ASP.NET Core for range processing, but ASP.NET Core serves a partial response only when the
+  stream it is given can report a length and seek — and S3's response stream only reads forward,
+  so every range request on that backend quietly became a `200` carrying the whole object. A
+  client seeking through a video pulled the entire file through the application each time, and
+  the documented `Range` support was true of local disk and Azure and a fiction on S3.
+  `AmazonS3StorageProvider.OpenReadAsync` now returns a seekable stream: the length comes from
+  the response that opened it, seeking moves a counter, and a read that lands where the open
+  response cannot reach issues a fresh ranged `GET`. A straight download and the `bytes=0-` a
+  media element asks for first still cost exactly one request, and a short forward seek is served
+  by discarding bytes rather than paying for another. `StorageContractTests` asserts seekability
+  and window reads against LocalStack and Azurite, so this cannot regress unnoticed — the previous
+  range test used an in-memory double, which seeks happily and proved nothing about S3.
+  `IMediaStorageProvider.OpenReadAsync` now documents seekability as part of the contract, and
+  [adding-a-backend.md](docs/adding-a-backend.md) explains how to satisfy it over a forward-only
+  SDK.
 - `AmazonS3StorageProvider.GetUrlAsync` pre-signs on the scheme its client's `ServiceURL` uses.
   The AWS SDK pre-signs over HTTPS regardless of how the client is configured, so a provider
   pointed at an S3-compatible endpoint served over plain HTTP — an on-prem gateway, a local proxy,

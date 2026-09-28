@@ -75,6 +75,62 @@ public abstract class StorageContractTests : IAsyncLifetime
         Assert.Equal(content.Length, buffer.Length);
     }
 
+    /// <summary>
+    /// A backend that can only read forward loses HTTP <c>Range</c> silently: ASP.NET Core serves
+    /// a partial response only when the stream can report a length, and answers the whole object
+    /// with a <c>200</c> when it cannot. So seekability is part of the contract, not an accident
+    /// of which SDK is underneath — and it is asserted here rather than at the endpoint, where an
+    /// in-memory test double would seek happily and prove nothing about S3.
+    /// </summary>
+    [Fact]
+    public async Task OpenRead_returns_a_stream_a_range_can_be_served_from()
+    {
+        var content = TestMedia.Unrecognised(64 * 1024);
+        var path    = Path();
+
+        await Storage.SaveAsync(Write(content, path));
+
+        await using var stream = await Storage.OpenReadAsync(Storage.Container, path);
+
+        Assert.True(stream.CanSeek);
+        Assert.Equal(content.Length, stream.Length);
+    }
+
+    /// <summary>
+    /// The read pattern ASP.NET Core actually performs for <c>Range: bytes=from-to</c>: measure,
+    /// seek, copy exactly the window. Three windows, in an order that exercises a short forward
+    /// seek, a long one, and a seek backwards — which on S3 is what forces a fresh ranged request
+    /// rather than more of the response already open.
+    /// </summary>
+    [Fact]
+    public async Task OpenRead_serves_any_window_of_the_object()
+    {
+        // Bytes that differ from one another, so a window landing at the wrong offset cannot pass
+        // by looking like the right one.
+        var content = new byte[96 * 1024];
+        Random.Shared.NextBytes(content);
+
+        var path = Path();
+        await Storage.SaveAsync(Write(content, path));
+
+        await using var stream = await Storage.OpenReadAsync(Storage.Container, path);
+
+        foreach (var (from, length) in new[] { (10, 100), (80 * 1024, 4096), (32, 64) })
+        {
+            stream.Seek(from, SeekOrigin.Begin);
+
+            var window = new byte[length];
+            await stream.ReadExactlyAsync(window);
+
+            Assert.Equal(content[from..(from + length)], window);
+        }
+
+        // Past the end reads as an end of stream rather than an error, which is what a stream
+        // contract promises and what a copy loop relies on.
+        stream.Seek(0, SeekOrigin.End);
+        Assert.Equal(0, await stream.ReadAsync(new byte[16]));
+    }
+
     [Fact]
     public async Task OpenRead_reports_a_path_with_nothing_at_it() =>
         await Assert.ThrowsAsync<MediaContentMissingException>(

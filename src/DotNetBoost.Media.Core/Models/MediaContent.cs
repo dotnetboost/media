@@ -19,8 +19,11 @@ public sealed class MediaContent : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// The bytes. Forward-only on some backends and seekable on others — do not assume
-    /// <see cref="System.IO.Stream.Length"/> works; <see cref="MediaFileInfo.Size"/> always does.
+    /// The bytes. Seekable on all three shipped backends, which is what lets a caller serve
+    /// <c>Range</c> requests from it — but a custom backend need not be, so check
+    /// <see cref="System.IO.Stream.CanSeek"/> before relying on it.
+    /// <see cref="MediaFileInfo.Size"/> is the length either way, and is the one to trust:
+    /// it is what was measured while the bytes were written.
     /// </summary>
     public Stream Stream { get; }
 
