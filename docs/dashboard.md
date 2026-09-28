@@ -18,7 +18,7 @@ for each. To run them separately, see
 | | |
 |---|---|
 | **Media** | The whole library. Search by file name, narrow by category, tag or kind, sort by date, name or size, page through it, upload, inspect, rename, retag, delete. Opening one file shows **every entity using it**, each with its roles and its own detach button. |
-| **Products** | The sample's own entity. Each product's media is grouped by what it is for — the primary image, the gallery in its own order, anything else after — with make-primary, move, and remove-from-product on each. The button opens the library in a modal to attach a file that already exists, or upload a new one straight onto it. |
+| **Products** | The sample's own entity, each with what it has attached, grouped by what it is for. Opening one gives it a page of its own — its columns, and **a box per role**: empty with a `+`, or holding the image with an `x` that takes it off this product. |
 | **Overview** | A few counts, and the way in. |
 
 ## One browser, used twice
@@ -27,9 +27,9 @@ for each. To run them separately, see
 products page shows in a modal.
 
 ```
-pages/media.vue      →  MediaBrowser
-pages/products.vue   →  MediaPickerModal  →  MediaBrowser   (browse tab, selectable)
-                                          →  MediaBrowser   (attached tab, filtered by owner and role)
+pages/media.vue          →  MediaBrowser
+pages/products/[id].vue  →  ProductRoleBox  →  MediaPickerModal  →  MediaBrowser   (browse tab, selectable)
+                                                                 →  MediaBrowser   (attached tab, by owner and role)
 ```
 
 That is worth stating because "the same functionality in the popup" is the kind of requirement
@@ -44,7 +44,7 @@ behind it was showing.
 
 The distinction the library rests on is visible in the UI, because getting it wrong destroys data:
 
-- **Remove from product** detaches. The file stays in the library and stays attached to every other
+- **The `x` on a role box** detaches. The file stays in the library and stays attached to every other
   product using it. On the Media page the same thing is a click on one of a file's role chips, since
   each chip is one link.
 - **Delete**, on the Media page, removes the file and every link to it. The confirmation says how
@@ -55,24 +55,36 @@ Attaching a file to a second product does not take it off the first, so there is
 about there. The links a file has are read one file at a time, because a listing does not carry
 them.
 
-## Roles in the picker
+## Roles are boxes, not a dropdown
 
-The picker chooses what the next attach is **for**, and it **asks the entity** rather than assuming:
-`GET api/media/roles/{entityName}` returns what that entity declared, and the selector is built from
-the answer. A product offers `primary / gallery / seo`; an invoice would offer its own.
+A role is a property of the **link**, so something has to choose one when the link is made. The
+obvious control is a select beside the library — *attach as: primary / gallery / seo* — and it is the
+wrong one three times over: it asks after the file has been picked, it answers a question the page
+already knew the answer to, and nothing on screen says which roles the product is still short of.
 
-Whether attaching replaces or appends comes from the same answer — a single-valued role sends
-`replace: true`, a multi-valued one appends — so the hint under the box tells the truth for whatever
-was opened rather than describing a product.
+The product page makes the roles the control instead. Each one the entity declares gets a box, and
+an empty `primary` box is the product saying it has no main image without being asked:
 
-The list opens on a multi-valued role where there is one. Appending is the move that cannot destroy
-anything, and a picker that opened on `primary` would replace the main image on the first click.
+| | |
+|---|---|
+| Single-valued (`primary`, `seo`) | Exactly one box. Full, it offers **replace**, which attaches with `replace: true` — the engine takes the role over from whatever held it, in one operation, and the displaced file is only detached. |
+| Multi-valued (`gallery`) | A box per file, in the order the product put them in, with arrows to move one within the role, and a trailing empty box to append to. |
 
-An entity that declares nothing comes back with an empty list, and the box becomes free text — which
+Clicking a box opens the picker with the role already fixed, so the modal renders **no role control
+at all** — there is no second answer to keep in step with the first.
+
+The list still **asks the entity** rather than assuming: `GET api/media/roles/{entityName}` returns
+what that entity declared, so a product offers `primary / gallery / seo`, an invoice offers its own,
+and a fourth role on the entity grows a fourth box with no change to the client. Whether attaching
+replaces or appends comes from the same answer.
+
+An entity that declares nothing comes back with an empty list. The page then falls back to the roles
+its files are actually attached under — it cannot offer an empty box for a role nobody has named,
+because there is no such list. The picker opened without a fixed role keeps its free-text box, which
 is exactly what "not declared" means: any role will do.
 
-The "Attached" badge counts the selected role, so an image already in the gallery is still offered as
-a candidate for primary, which is a perfectly reasonable thing to want.
+The "Attached" badge counts the role being attached in, so an image already in the gallery is still
+offered as a candidate for primary, which is a perfectly reasonable thing to want.
 
 ## Everything is filtered by the API
 

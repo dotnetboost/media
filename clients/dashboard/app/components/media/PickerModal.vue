@@ -12,6 +12,15 @@ const props = defineProps<{
   owner: { entityName: string, entityId: string }
   title?: string
   /**
+   * What the attach is for, decided by the host rather than here.
+   *
+   * The products page opens this from a box that already stands for one role, so the question the
+   * role control asks has an answer before the modal is open — and a second control answering it
+   * again is one the user can put out of step with the box they clicked. Given, the control is not
+   * rendered at all.
+   */
+  fixedRole?: string
+  /**
    * Bumped by the host once an attach it was asked for has actually landed.
    *
    * The attach is the host's to make — it knows its own endpoints — and an emit cannot be awaited,
@@ -57,6 +66,11 @@ async function loadRoles() {
     declared.value = []
   } finally {
     loadingRoles.value = false
+  }
+
+  if (props.fixedRole) {
+    role.value = props.fixedRole
+    return
   }
 
   // Prefer a multi-valued role as the starting point. Appending is the move that cannot destroy
@@ -135,7 +149,21 @@ watch(role, () => loadAttached())
 // The roles belong to the entity, so a picker reopened for a different one asks again.
 watch(() => props.owner.entityName, () => loadRoles(), { immediate: true })
 
+// Reopened from a different box: the same mounted modal, a different role.
+watch(() => props.fixedRole, (fixed) => {
+  if (fixed) {
+    role.value = fixed
+  }
+})
+
 watch(() => props.version, () => reloadAll())
+
+/** Shared by both modes: what makes attaching safe is that it is a link, not a move. */
+const shared = 'A file may belong to several entities at once; attaching it here does not take it off anything else.'
+
+const description = computed(() => (props.fixedRole
+  ? `Pick the file this ${props.owner.entityName.toLowerCase()} should use as its ${props.fixedRole}, or upload one — it is stored and attached in one step. ${shared}`
+  : `Attach a file that is already in the library, or upload a new one — it is stored and attached in one step. ${shared}`))
 
 const tabs = computed(() => [
   { label: 'All files', value: 'library', icon: 'i-lucide-images' },
@@ -173,7 +201,7 @@ onMounted(() => {
   <UModal
     v-model:open="open"
     :title="title ?? `Media for ${owner.entityName} ${owner.entityId}`"
-    description="Attach a file that is already in the library, or upload a new one — it is stored and attached in one step. A file may belong to several entities at once; attaching it here does not take it off anything else."
+    :description="description"
     :ui="{ content: 'max-w-5xl' }"
   >
     <template #body>
@@ -186,8 +214,14 @@ onMounted(() => {
             size="sm"
           />
 
+          <!-- Fixed by the host — the box that opened this already stands for one role, and the
+               hint below the tabs says which. -->
+          <p v-if="fixedRole && tab === 'library' && !loadingRoles" class="pb-1 text-xs text-muted">
+            {{ selectedRole.hint }}
+          </p>
+
           <UFormField
-            v-if="tab === 'library'"
+            v-else-if="!fixedRole && tab === 'library'"
             label="Attach as"
             :description="selectedRole.hint"
             :ui="{ description: 'text-xs' }"

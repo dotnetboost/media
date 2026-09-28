@@ -35,6 +35,14 @@ public sealed record ProductImage(
 /// <summary>Body of <c>POST /products</c>.</summary>
 public sealed record CreateProductRequest(string Sku, string Name, decimal Price);
 
+/// <summary>Body of <c>PUT /products/{id}</c>.</summary>
+/// <remarks>
+/// Its own columns only. A product's media is not in here and never will be: the files are
+/// attachment rows pointing at the product, so saving its name cannot disturb them and attaching
+/// an image does not mean saving the product.
+/// </remarks>
+public sealed record UpdateProductRequest(string Sku, string Name, decimal Price);
+
 /// <summary>Body of <c>PUT /products/{id}/images/primary</c>.</summary>
 /// <param name="MediaFileId">The image to become this product's one primary image.</param>
 public sealed record SetPrimaryImageRequest(Guid MediaFileId);

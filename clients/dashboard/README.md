@@ -64,12 +64,38 @@ added to it appears in both and neither can drift from the other.
 
 ```
 pages/media.vue          →  MediaBrowser
-pages/products.vue       →  MediaPickerModal  →  MediaBrowser  (browse tab, selectable)
-                                              →  MediaBrowser  (attached tab, filtered by owner)
+pages/products/[id].vue  →  ProductRoleBox    →  MediaPickerModal  →  MediaBrowser  (browse tab)
+                                                                   →  MediaBrowser  (attached tab)
 ```
 
 Each browser owns its own `useMediaLibrary`, so the picker's search and page are independent of
 the page's — opening the picker cannot disturb what the page behind it was showing.
+
+## A box per role, not a dropdown
+
+A role is a property of the **link**, so something has to choose one when the link is made. The
+obvious control is a select next to the library — "attach as: primary / gallery / seo" — and it is
+the wrong one. It asks after the file has been picked, it answers a question the page already knew
+the answer to, and nothing on screen says which roles the product is still short of.
+
+`pages/products/[id].vue` makes the roles the control instead. Each one the entity declares gets a
+box: empty with a `+`, or holding the image with an `x` in the corner. Clicking an empty box opens
+the same `MediaPickerModal` with `fixed-role` set, so the modal has no role control at all and
+there is no second answer to keep in step with the first.
+
+| Role | Boxes |
+|---|---|
+| Single-valued (`primary`, `seo`) | Exactly one. Full, it offers **replace**, which attaches with `replace: true` — the engine takes the role over from whatever held it in one operation. |
+| Multi-valued (`gallery`) | One per file, in order, with arrows to move a file within the role, plus a trailing empty box to append to. |
+
+The list is read from `GET api/media/roles/Product`, which is `DeclareRolesFrom` reading the
+`[MediaRole]` attributes on the entity — so a fourth role on `Product` grows a fourth box with no
+change to this client. An entity that declares none falls back to the roles its files are actually
+attached under.
+
+The `x` is a **detach**, never a delete: the file stays in the library and stays attached to every
+other product using it. Deleting the file itself is the Media page's business, and it takes the
+file out of every product at once.
 
 ## Everything is filtered by the API
 
@@ -98,8 +124,10 @@ been seen yet can still be typed.
 | `app/components/media/UploadModal.vue` | `POST api/media`, multipart |
 | `app/components/media/DetailSlideover.vue` | `PATCH api/media/{id}` and delete |
 | `app/components/media/PickerModal.vue` | The library in a modal, for attaching |
+| `app/components/product/RoleBox.vue` | One slot in a role — the image, or a `+` to fill it |
 | `app/pages/media.vue` | The Media page |
-| `app/pages/products.vue` | The sample's products, and the attach button |
+| `app/pages/products/index.vue` | The sample's products, each with what it has attached |
+| `app/pages/products/[id].vue` | One product: its columns, and a box per role |
 | `app/utils/format.ts` | Bytes, dates, icons, content URLs |
 | `server/api/[...path].ts` | Proxy to the .NET API |
 

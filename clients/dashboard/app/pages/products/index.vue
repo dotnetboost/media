@@ -1,17 +1,14 @@
 <script setup lang="ts">
-import type { MediaFile, Product, ProductImage } from '~/types'
+import type { Product, ProductImage } from '~/types'
 
 /**
  * The sample's products, each with the files attached to it and what each one is used for.
  *
- * Attaching is a `POST api/media/{id}/attachments` — a link of its own, not a field on the file.
- * Nothing on the product changes and nothing in the database refers to the media row, which is the
- * arrangement the whole library rests on. It is also why one image can be several products' at
- * once: attaching it here takes it off nothing.
- *
- * Two different removals, and the difference matters. "Remove from product" detaches — the file
- * stays in the library and stays attached to every other product using it. Deleting the file, from
- * the Media page, takes it out of every product at once.
+ * A list, and read-only as far as media goes: what a product uses a file for is decided on its own
+ * page, where there is room for a box per role. Attaching is a `POST api/media/{id}/attachments` —
+ * a link of its own, not a field on the file. Nothing on the product changes and nothing in the
+ * database refers to the media row, which is the arrangement the whole library rests on. It is also
+ * why one image can be several products' at once: attaching it takes it off nothing.
  */
 useHead({ title: 'Products — DotNetBoost.Media' })
 
@@ -22,15 +19,10 @@ const pending = ref(true)
 const loadError = ref('')
 const busy = ref<number | null>(null)
 
-/** The product whose media picker is open. */
-const picking = ref<Product | null>(null)
 const deleting = ref<Product | null>(null)
 const creating = ref(false)
 
 const draft = reactive({ sku: '', name: '', price: 0 })
-
-/** Bumped after every change to a product's media, so the open picker re-reads what it shows. */
-const mediaVersion = ref(0)
 
 async function load() {
   pending.value = true
@@ -43,52 +35,6 @@ async function load() {
   } finally {
     pending.value = false
   }
-}
-
-const picked = computed(() => picking.value
-  ? products.value.find(product => product.id === picking.value!.id) ?? picking.value
-  : null)
-
-const owner = computed(() => picked.value
-  ? { entityName: 'Product', entityId: String(picked.value.id) }
-  : { entityName: 'Product', entityId: '' })
-
-/** Runs one call against a product, reports the outcome, and reloads. */
-async function act(productId: number, call: () => Promise<unknown>, success: string, failure: string) {
-  busy.value = productId
-
-  try {
-    await call()
-    toast.add({ title: success, icon: 'i-lucide-check', color: 'success' })
-    mediaVersion.value++
-    await load()
-  } catch (error) {
-    toast.add({
-      title: failure,
-      description: problemMessage(error),
-      icon: 'i-lucide-triangle-alert',
-      color: 'error'
-    })
-  } finally {
-    busy.value = null
-  }
-}
-
-function onAttach(file: MediaFile, role: string, replace: boolean) {
-  const product = picked.value
-  if (!product) {
-    return
-  }
-
-  return act(
-    product.id,
-    () => $fetch(`/api/media/${file.id}/attachments`, {
-      method: 'POST',
-      body: { ownerEntityName: 'Product', ownerEntityId: String(product.id), role, replace }
-    }),
-    `Attached ${file.fileName} as ${role}`,
-    'Could not attach the file'
-  )
 }
 
 /**
@@ -118,123 +64,13 @@ function groups(product: Product) {
     })
 }
 
-/**
- * Makes one image the product's primary. The endpoint uses SetAsync, so it takes the role over from
- * whatever held it in one operation — and the displaced image is only detached, never deleted.
- */
-function setPrimary(product: Product, image: ProductImage) {
-  return act(
-    product.id,
-    () => $fetch(`/api/products/${product.id}/images/primary`, {
-      method: 'PUT',
-      body: { mediaFileId: image.id }
-    }),
-    `${image.fileName} is now the primary image`,
-    'Could not set the primary image'
-  )
-}
-
-/** Moves one gallery image one place earlier or later, and saves the whole order. */
-function moveInGallery(product: Product, image: ProductImage, delta: -1 | 1) {
-  const gallery = product.images
-    .filter(i => i.role === 'gallery')
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-
-  const from = gallery.findIndex(i => i.id === image.id)
-  const to = from + delta
-
-  if (from < 0 || to < 0 || to >= gallery.length) {
-    return
-  }
-
-  const ids = gallery.map(i => i.id)
-  ;[ids[from], ids[to]] = [ids[to]!, ids[from]!]
-
-  return act(
-    product.id,
-    // Every id in the role, because a partial order has no meaning: the images left out would have
-    // no defined position. The API refuses one.
-    () => $fetch(`/api/products/${product.id}/images/gallery/order`, {
-      method: 'PUT',
-      body: { mediaFileIds: ids }
-    }),
-    'Gallery order saved',
-    'Could not save the gallery order'
-  )
-}
-
-/**
- * Takes an image off this product without deleting it. It stays in the library and stays attached
- * to every other product using it.
- */
-function detachImage(product: Product, image: ProductImage) {
-  return act(
-    product.id,
-    () => $fetch(`/api/products/${product.id}/images/${image.id}`, {
-      method: 'DELETE',
-      query: { role: image.role }
-    }),
-    `Removed ${image.fileName} from ${product.name}`,
-    'Could not remove the image'
-  )
-}
-
-/** The actions offered on one of a product's images. */
-function imageActions(product: Product, image: ProductImage) {
-  const gallery = product.images
-    .filter(i => i.role === 'gallery')
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-
-  const at = gallery.findIndex(i => i.id === image.id)
-
-  return [
-    [
-      {
-        label: 'Open',
-        icon: 'i-lucide-external-link',
-        to: contentUrl(image.id),
-        target: '_blank'
-      },
-      ...(image.role === 'primary'
-        ? []
-        : [{
-            label: 'Make primary',
-            icon: 'i-lucide-star',
-            onSelect: () => setPrimary(product, image)
-          }]),
-      ...(image.role === 'gallery' && at > 0
-        ? [{
-            label: 'Move earlier',
-            icon: 'i-lucide-arrow-left',
-            onSelect: () => moveInGallery(product, image, -1)
-          }]
-        : []),
-      ...(image.role === 'gallery' && at >= 0 && at < gallery.length - 1
-        ? [{
-            label: 'Move later',
-            icon: 'i-lucide-arrow-right',
-            onSelect: () => moveInGallery(product, image, 1)
-          }]
-        : [])
-    ],
-    [
-      {
-        label: 'Remove from product',
-        icon: 'i-lucide-unlink',
-        color: 'error' as const,
-        onSelect: () => detachImage(product, image)
-      }
-    ]
-  ]
-}
-
 async function create() {
   if (!draft.sku.trim() || !draft.name.trim()) {
     return
   }
 
   try {
-    await $fetch('/api/products', {
+    const created = await $fetch<Product>('/api/products', {
       method: 'POST',
       body: { sku: draft.sku.trim(), name: draft.name.trim(), price: Number(draft.price) || 0 }
     })
@@ -244,7 +80,9 @@ async function create() {
     draft.name = ''
     draft.price = 0
 
-    await load()
+    // Straight to its page: a product is created empty, and attaching its images is the next thing
+    // anyone wants to do.
+    await navigateTo(`/products/${created.id}`)
   } catch (error) {
     toast.add({
       title: 'Could not create the product',
@@ -317,7 +155,7 @@ onMounted(load)
     <template #body>
       <UPageCard
         title="Media attached to an entity"
-        description="Nothing on Product mentions media — no column, no navigation, no migration. An attachment row points at a product by name and key, so one image can belong to several products at once, and each of them decides what it uses the image for. Deleting a product deletes the files it alone was using and unlinks the rest."
+        description="Nothing on Product mentions media — no column, no navigation, no migration. An attachment row points at a product by name and key, so one image can belong to several products at once, and each of them decides what it uses the image for. Open a product to fill its roles; deleting one deletes the files it alone was using and unlinks the rest."
         variant="naked"
       >
         <UBadge
@@ -363,9 +201,12 @@ onMounted(load)
           <template #header>
             <div class="flex items-start gap-3">
               <div class="min-w-0 flex-1">
-                <p class="truncate font-medium text-highlighted">
+                <NuxtLink
+                  :to="`/products/${product.id}`"
+                  class="truncate font-medium text-highlighted hover:text-primary"
+                >
                   {{ product.name }}
-                </p>
+                </NuxtLink>
                 <p class="font-mono text-xs text-muted">
                   {{ product.sku }}
                 </p>
@@ -386,7 +227,8 @@ onMounted(load)
 
           <div class="flex flex-col gap-3">
             <!-- Grouped by role rather than shown as one heap: which image is the main one, and what
-                 order the gallery is in, is the whole point of the attachment carrying a role. -->
+                 order the gallery is in, is the whole point of the attachment carrying a role.
+                 Changing any of it is the product's own page, which has a box per role. -->
             <div
               v-for="group in groups(product)"
               :key="group.role"
@@ -405,39 +247,33 @@ onMounted(load)
               </div>
 
               <div class="flex flex-wrap gap-2">
-                <UDropdownMenu
+                <div
                   v-for="image in group.images"
                   :key="`${group.role}-${image.id}`"
-                  :items="imageActions(product, image)"
+                  class="size-16 overflow-hidden rounded-md border border-default"
+                  :class="group.role === 'primary' && 'ring-2 ring-primary ring-offset-1 ring-offset-default'"
+                  :title="`${image.fileName} · ${formatBytes(image.size)}`"
                 >
-                  <button
-                    type="button"
-                    class="relative size-16 overflow-hidden rounded-md border border-default transition hover:border-inverted/30"
-                    :class="group.role === 'primary' && 'ring-2 ring-primary ring-offset-1 ring-offset-default'"
-                    :title="`${image.fileName} · ${formatBytes(image.size)}`"
-                    :aria-label="`Actions for ${image.fileName}`"
-                  >
-                    <MediaThumbnail
-                      :file="{
-                        id: image.id,
-                        fileName: image.fileName,
-                        contentType: image.contentType,
-                        size: image.size,
-                        checksum: null,
-                        category: null,
-                        tags: [],
-                        metadata: {},
-                        attachments: null,
-                        uploadedBy: null,
-                        createdAt: '',
-                        updatedAt: null,
-                        url: null
-                      }"
-                      size="sm"
-                      class="size-full"
-                    />
-                  </button>
-                </UDropdownMenu>
+                  <MediaThumbnail
+                    :file="{
+                      id: image.id,
+                      fileName: image.fileName,
+                      contentType: image.contentType,
+                      size: image.size,
+                      checksum: null,
+                      category: null,
+                      tags: [],
+                      metadata: {},
+                      attachments: null,
+                      uploadedBy: null,
+                      createdAt: '',
+                      updatedAt: null,
+                      url: null
+                    }"
+                    size="sm"
+                    class="size-full"
+                  />
+                </div>
               </div>
             </div>
 
@@ -450,10 +286,9 @@ onMounted(load)
             <div class="flex items-center gap-2">
               <UButton
                 icon="i-lucide-image-plus"
-                label="Manage media"
+                label="Edit product"
                 size="sm"
-                :loading="busy === product.id"
-                @click="picking = product"
+                :to="`/products/${product.id}`"
               />
               <span class="text-xs text-muted">
                 {{ product.images.length }} file(s)
@@ -463,21 +298,10 @@ onMounted(load)
         </UCard>
       </div>
 
-      <MediaPickerModal
-        v-if="picked"
-        :open="picking !== null"
-        :owner="owner"
-        :version="mediaVersion"
-        :title="`Media for ${picked.name}`"
-        @update:open="!$event && (picking = null)"
-        @attach="onAttach"
-        @changed="load"
-      />
-
       <UModal
         v-model:open="creating"
         title="New product"
-        description="Created through the sample's own POST api/products. Media is attached afterwards."
+        description="Created through the sample's own POST api/products. Media is attached afterwards, on its page."
       >
         <template #body>
           <div class="flex flex-col gap-4">
