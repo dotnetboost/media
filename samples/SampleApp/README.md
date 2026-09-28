@@ -40,6 +40,7 @@ And this sample's, showing media attached to an entity:
 GET    /api/products                  products, each with its images
 GET    /api/products/{id}
 POST   /api/products
+PUT    /api/products/{id}             its own columns; media is untouched
 POST   /api/products/{id}/images      upload an image for a product
 DELETE /api/products/{id}             deletes the product AND its files
 ```

@@ -117,6 +117,28 @@ app.MapPost("/api/products", async (CreateProductRequest request, AppDbContext d
     return Results.Created($"/api/products/{product.Id}", product);
 });
 
+// Save a product's own columns. Nothing here touches media, and that is the point: the files are
+// attachment rows pointing at this product, so renaming it cannot disturb them, and attaching an
+// image is not a product save.
+app.MapPut("/api/products/{id:int}", async (
+    int id,
+    UpdateProductRequest request,
+    AppDbContext db,
+    CancellationToken ct) =>
+{
+    var product = await db.Products.FirstOrDefaultAsync(p => p.Id == id, ct);
+    if (product is null)
+        return Results.NotFound();
+
+    product.Sku = request.Sku;
+    product.Name = request.Name;
+    product.Price = request.Price;
+
+    await db.SaveChangesAsync(ct);
+
+    return Results.NoContent();
+});
+
 // Upload an image for a product. The two writes — the file and the product's own row — share the
 // DbContext, so one transaction covers both.
 //

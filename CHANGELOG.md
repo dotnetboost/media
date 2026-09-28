@@ -7,6 +7,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- `clients/dashboard` picks a role with a **box per role** rather than a dropdown over the library.
+  A product now has its own page, `/products/{id}`, where each role the entity declares is drawn as
+  an image box: empty with a `+`, or holding the image with an `x` that detaches it. Clicking a box
+  opens the same picker with the role already fixed, so the modal has no role control at all.
+
+  The dropdown asked what a file was for *after* it had been picked, and nothing on screen said
+  which roles the product was still short of — an empty `primary` box says it without being asked.
+  A single-valued role gets one box, which offers **replace** when full; a multi-valued one gets a
+  box per file, in order, with arrows and a trailing empty box to append to. The list is read from
+  `GET api/media/roles/{entityName}`, so a role added to the entity grows a box with no change to
+  the client.
+
+  `MediaPickerModal` gains a `fixedRole` prop for this. Without it the picker is unchanged, and the
+  Media page is untouched.
+
+### Added
+
+- `samples/SampleApp` maps `PUT /api/products/{id}`, so the dashboard's product page can save the
+  name, SKU and price it shows. Its own columns only — a product's media is attachment rows
+  pointing at it, so saving the product cannot disturb them and attaching an image is not a save.
+
 ## [1.0.0-preview.1] - 2026-09-28
 
 First public release. Nothing before it was published, so all of it is new — including the two
