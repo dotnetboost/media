@@ -103,6 +103,19 @@ public static class MediaProblems
 /// your own upload endpoint — with problem details. Everything else is left to the next handler.
 /// Register it with <c>services.AddExceptionHandler&lt;MediaExceptionHandler&gt;()</c> and
 /// <c>app.UseExceptionHandler()</c>.
+/// <para>
+/// <b>Worth knowing about that second line.</b> <c>UseExceptionHandler()</c> rethrows anything no
+/// handler claims, and in Development the developer exception page then renders it as a 500. A
+/// malformed request body throws <c>BadHttpRequestException</c>, which already carries
+/// <c>StatusCode = 400</c> — so the same request answers 400 in Production and 500 on the machine it
+/// was written on, and the client author codes for the wrong one. This handler leaves it alone,
+/// because it is not a media problem; add one of your own that claims it, as
+/// <c>samples/SampleApp</c> does:
+/// <code>
+/// services.AddExceptionHandler&lt;BadRequestExceptionHandler&gt;();   // honours badRequest.StatusCode
+/// services.AddExceptionHandler&lt;MediaExceptionHandler&gt;();
+/// </code>
+/// </para>
 /// </summary>
 /// <param name="problemDetails">Writes the response when <c>AddProblemDetails()</c> is registered.</param>
 public sealed class MediaExceptionHandler(IProblemDetailsService? problemDetails = null) : IExceptionHandler

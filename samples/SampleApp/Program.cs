@@ -2,6 +2,7 @@ using DotNetBoost.Media.API;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
 using Microsoft.EntityFrameworkCore;
+using SampleApp;
 using SampleApp.Data;
 using SampleApp.Domain;
 using SampleApp.Dtos;
@@ -50,6 +51,11 @@ builder.Services.AddMedia(options =>
     .Build();
 
 builder.Services.AddProblemDetails();
+
+// Order matters: handlers run in the order they are registered, and each claims only what the ones
+// before it did not. This one answers a body the binder could not read with the 400 that
+// BadHttpRequestException already carries — without it, Development turns that into a 500.
+builder.Services.AddExceptionHandler<BadRequestExceptionHandler>();
 builder.Services.AddExceptionHandler<MediaExceptionHandler>();
 builder.Services.AddOpenApi();
 

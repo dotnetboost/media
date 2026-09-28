@@ -3,6 +3,7 @@ using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.TestSupport;
 using Microsoft.AspNetCore.Mvc;
 using System.Net;
+using System.Text;
 using System.Net.Http.Json;
 
 namespace DotNetBoost.Media.ApiTests;
@@ -689,5 +690,37 @@ public class WriteEndpointTests
         // replace: true is the supported way, and it works.
         var replaced = await AttachAsync(app, second.Id, "Product", "1", "primary", replace: true);
         Assert.Equal("1", Assert.Single(replaced.Attachments!).OwnerEntityId);
+    }
+
+    /// <summary>
+    /// A body the binder cannot read is the client's mistake, and ASP.NET Core already says so:
+    /// BadHttpRequestException carries StatusCode 400. Registering an exception handler must not
+    /// throw that away and answer 500, which sends the caller looking for a fault on the server.
+    /// </summary>
+    [Fact]
+    public async Task A_malformed_body_is_a_bad_request_not_a_server_error()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var response = await app.Client.PutAsync(
+            new Uri("/api/media/attachments/order", UriKind.Relative),
+            new StringContent(
+                """{"ownerEntityName":"Product","ownerEntityId":"1","mediaFileIds":["not-a-guid"]}""",
+                Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Body_that_is_not_json_at_all_is_a_bad_request()
+    {
+        await using var app = await TestApp.StartAsync();
+
+        var response = await app.Client.PutAsync(
+            new Uri("/api/media/attachments/order", UriKind.Relative),
+            new StringContent("{ this is not json", Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 }

@@ -142,6 +142,13 @@ Unrelated to the above:
 
 ### Fixed
 
+- `samples/SampleApp` answers a malformed JSON body with `400` in Development as well as in
+  Production. `UseExceptionHandler()` rethrows what no handler claims, and the developer exception
+  page then rendered `BadHttpRequestException` — which already carries `400` — as a `500`, so the
+  same request answered differently on a developer's machine than on a server. A ten-line
+  `BadRequestExceptionHandler` honours the status the exception carries and returns problem details
+  naming the offending field. `MediaExceptionHandler`'s own documentation now warns about it, since
+  it is the line telling applications to enable `UseExceptionHandler()` in the first place.
 - Deduplication no longer discards the entity an upload was for. With `DeduplicateByChecksum` on,
   `media.For(productB).UploadAsync(sameBytes)` returned product A's existing file and dropped
   `upload.Owner` on the floor, so the call reported success and attached nothing. It was unfixable

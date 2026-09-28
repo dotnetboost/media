@@ -245,6 +245,29 @@ Product has no media role 'galery'. It declares: primary, gallery (many), seo.
 appending — SetAsync in code, or "replace": true through the REST API.
 ```
 
+## Malformed bodies and `UseExceptionHandler()`
+
+`MediaExceptionHandler` claims media problems and leaves everything else alone, which is correct —
+but it means nothing claims a body the binder could not read. `UseExceptionHandler()` rethrows what
+no handler takes, and in **Development** the developer exception page then renders that as a **500**,
+though `BadHttpRequestException` already carries `400`.
+
+The result is a request that answers `400` in Production and `500` on the machine it was written on.
+Register a handler that honours the status the exception carries — `samples/SampleApp` has a
+ten-line `BadRequestExceptionHandler` to copy:
+
+```csharp
+services.AddExceptionHandler<BadRequestExceptionHandler>();   // honours badRequest.StatusCode
+services.AddExceptionHandler<MediaExceptionHandler>();
+```
+
+You then get a problem-details body naming the offending field, which beats a stack trace:
+
+```json
+{ "title": "Malformed request body", "status": 400,
+  "detail": "The JSON value could not be converted to System.Guid. Path: $.mediaFileIds[0]…" }
+```
+
 ## No "delete everything this entity has"
 
 There is deliberately no endpoint for `IMediaAccessor.DeleteAllAsync`. It exists for when an entity
@@ -255,7 +278,8 @@ destroys an arbitrary entity's media.
 
 | | | |
 |---|---|---|
-| `400` | `InvalidMediaException` | A malformed multipart body, a missing `file` field, an unusable tag |
+| `400` | `InvalidMediaException` | A malformed multipart body, a missing `file` field, an unusable tag, an undeclared role |
+| `400` | `BadHttpRequestException` | A JSON body the binder could not read — see the note below |
 | `404` | `MediaNotFoundException` | No live file with that id |
 | `404` | `MediaContentMissingException` | The row is there, the bytes are not |
 | `409` | `MediaConflictException` | A duplicate id |
