@@ -26,6 +26,26 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <summary>Every attachment row, for a test asserting on the links themselves.</summary>
     public IReadOnlyCollection<MediaAttachment> Attachments => [.. _attachments.Values];
 
+    private int _queries;
+    private int _counts;
+
+    /// <summary>
+    /// How many listing queries have been issued, and how many counts beside them. A real store
+    /// pays a round trip for each, so a test can assert that a read costs what it should —
+    /// whether an extra aggregate is being run for a total nobody reads, say.
+    /// </summary>
+    public int Queries => Volatile.Read(ref _queries);
+
+    /// <inheritdoc cref="Queries"/>
+    public int Counts => Volatile.Read(ref _counts);
+
+    /// <summary>Zeroes the read counters, so a test can measure one call rather than its setup.</summary>
+    public void ResetCounters()
+    {
+        Interlocked.Exchange(ref _queries, 0);
+        Interlocked.Exchange(ref _counts, 0);
+    }
+
     /// <inheritdoc/>
     public Task AddAsync(MediaFile file, CancellationToken ct = default)
     {
@@ -68,6 +88,8 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc/>
     public Task<IReadOnlyList<MediaFile>> QueryAsync(MediaQuery query, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref _queries);
+
         ArgumentNullException.ThrowIfNull(query);
 
         var matched = Filter(query);
@@ -104,6 +126,7 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// <inheritdoc/>
     public Task<int> CountAsync(MediaQuery query, CancellationToken ct = default)
     {
+        Interlocked.Increment(ref _counts);
         ArgumentNullException.ThrowIfNull(query);
         return Task.FromResult(Filter(query).Count());
     }

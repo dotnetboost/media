@@ -159,6 +159,24 @@ Unrelated to the above:
   `upload.Owner` on the floor, so the call reported success and attached nothing. It was unfixable
   while a row held one owner; the accessor now stores or deduplicates the bytes and then attaches,
   so identical bytes mean one file and two links.
+- An entity's own listings no longer hand back one page as though it were everything.
+  `media.For(entity).ListAsync()`, `ListByRoleAsync`, `ListByCategoryAsync` and
+  `ListWithRolesAsync` return a list rather than a page, so they promise every file — but they
+  asked for `MediaQuery.MaxTake` rows and returned whatever came back, so an entity holding more
+  than 500 files silently lost the rest, with nothing in the result to say so. `ListWithRolesAsync`
+  was worse: it reads the links whole and the files a page at a time, and dropped the overflowing
+  links on the floor under a comment explaining that a missing file means a soft-deleted one.
+
+  They now refuse. An entity or role over the cap throws `InvalidMediaException` naming
+  `IMediaManager.ListAsync`, which takes `Skip` and `Take` and reports a total. The check costs
+  nothing until it matters: it only probes for a further page when the one it got came back exactly
+  full, so an entity with five images never pays for it. Raising the cap instead was the other
+  option and is the wrong one — it would turn one gallery render into an unbounded read.
+- An entity's own listings no longer run a `COUNT` nobody reads. They went through
+  `IMediaManager.ListAsync`, which owes its caller a total and issues a second query — an
+  aggregate, and over the `EXISTS` subquery too once an owner is involved — and then discarded it.
+  Drawing a product's gallery cost two queries to produce one list. They now take a count-free path
+  and the public `ListAsync` is unchanged, total and all.
 - `GET /api/media/{id}/content` honours `Range` on Amazon S3. The endpoint has always asked
   ASP.NET Core for range processing, but ASP.NET Core serves a partial response only when the
   stream it is given can report a length and seek — and S3's response stream only reads forward,

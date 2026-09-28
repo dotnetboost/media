@@ -78,6 +78,12 @@ foreach (var attached in await media.For(product).ListWithRolesAsync(ct))
 image appears twice, once under each role — that is the question it answers. `ListAsync` asks the
 other one, "which files does this entity use", and returns each of them once.
 
+Each of these reads is a single query — no count is run, because none of them reports a total.
+Each also returns *all* of the files it describes, and refuses rather than truncating: an entity
+or a role holding more than 500 files throws `InvalidMediaException` pointing at
+`IMediaManager.ListAsync`, which takes `Skip` and `Take`. Returning the first 500 as though they
+were the lot would be a lie a caller could not detect.
+
 ### Declaring an entity's roles
 
 By default a role is free text and nothing checks it. An entity can opt in by declaring what it

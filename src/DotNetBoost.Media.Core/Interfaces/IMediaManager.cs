@@ -197,10 +197,22 @@ public interface IMediaAccessor
     /// Every live file attached to this entity, in the order the entity put them in: by role, then
     /// by <see cref="MediaAttachment.SortOrder"/>. A file attached under two roles is returned once,
     /// at its lowest role and position.
+    /// <para>
+    /// Every one of them, or none: an entity holding more than <see cref="MediaQuery.MaxTake"/>
+    /// files is refused rather than answered with the first page, which would look exactly like a
+    /// complete answer. Page it with <see cref="IMediaManager.ListAsync"/> and an owner filter if
+    /// you have entities that large.
+    /// </para>
     /// </summary>
+    /// <exception cref="InvalidMediaException">
+    /// More files are attached than one query returns.
+    /// </exception>
     Task<IReadOnlyList<MediaFileInfo>> ListAsync(CancellationToken ct = default);
 
     /// <summary>Its live files in one role, by <see cref="MediaAttachment.SortOrder"/>.</summary>
+    /// <exception cref="InvalidMediaException">
+    /// More files hold that role than one query returns; see <see cref="ListAsync"/>.
+    /// </exception>
     Task<IReadOnlyList<MediaFileInfo>> ListByRoleAsync(string role, CancellationToken ct = default);
 
     /// <summary>
@@ -213,6 +225,9 @@ public interface IMediaAccessor
     /// the other one and returns each file once.
     /// </para>
     /// </summary>
+    /// <exception cref="InvalidMediaException">
+    /// More files are attached than one query returns; see <see cref="ListAsync"/>.
+    /// </exception>
     Task<IReadOnlyList<MediaAttachedFile>> ListWithRolesAsync(CancellationToken ct = default);
 
     /// <summary>
@@ -220,6 +235,9 @@ public interface IMediaAccessor
     /// the file — the bucket its bytes live in — while a role is a property of this link; see
     /// <see cref="ListByRoleAsync"/>.
     /// </summary>
+    /// <exception cref="InvalidMediaException">
+    /// More of its files are in that category than one query returns; see <see cref="ListAsync"/>.
+    /// </exception>
     Task<IReadOnlyList<MediaFileInfo>> ListByCategoryAsync(string category, CancellationToken ct = default);
 
     /// <summary>

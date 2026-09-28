@@ -74,7 +74,14 @@ and the other by a key that is not meant to be read.
 unbounded one is how a listing endpoint becomes a way to exhaust the server's memory.
 
 `MediaPage.Total` is how many rows match the filter, ignoring `Skip` and `Take`. It costs a second
-query, which is why it is on the page rather than on every read.
+query, which is why it is on the page rather than on every read — and why `media.For(entity)`'s own
+listings, which have no total to report, do not run it.
+
+Those listings return a list rather than a page, so they promise *every* file. One query cannot
+return more than 500, so an entity holding more than that is **refused** rather than answered with
+the first page: a truncated list and a complete one are indistinguishable to the caller, and a
+gallery quietly missing its tail is worse than an error that says so. Page it here instead, with
+`OwnerEntityName`, `OwnerEntityId` and `Role` set.
 
 ## Categories and tags
 

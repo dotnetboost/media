@@ -235,6 +235,36 @@ internal sealed partial class MediaManager(
     /// <inheritdoc/>
     public async Task<MediaPage> ListAsync(MediaQuery? query = null, CancellationToken ct = default)
     {
+        var resolved = Resolve(query);
+
+        var rows  = await store.QueryAsync(resolved, ct).ConfigureAwait(false);
+        var total = await store.CountAsync(resolved, ct).ConfigureAwait(false);
+
+        return new MediaPage([.. rows.Select(MediaFileInfo.From)], total, resolved.Skip, resolved.Take);
+    }
+
+    /// <summary>
+    /// One page of matching files, <b>without</b> the total behind it.
+    /// <para>
+    /// The count is a second query — an aggregate, and over the EXISTS subquery as well once an
+    /// owner is involved. <see cref="ListAsync"/> owes its caller a total and pays for it; the
+    /// accessor's own listings do not use one, and running it anyway would double the cost of
+    /// drawing a product's gallery to produce a number nobody reads.
+    /// </para>
+    /// </summary>
+    internal async Task<IReadOnlyList<MediaFileInfo>> ListItemsAsync(MediaQuery query, CancellationToken ct)
+    {
+        var rows = await store.QueryAsync(Resolve(query), ct).ConfigureAwait(false);
+        return [.. rows.Select(MediaFileInfo.From)];
+    }
+
+    /// <summary>
+    /// Checks a query's filters against each other and normalises what the stores are kept too
+    /// dumb to normalise themselves. Shared, so that a listing and the count beside it cannot end
+    /// up asking different questions.
+    /// </summary>
+    private static MediaQuery Resolve(MediaQuery? query)
+    {
         var resolved = query ?? new MediaQuery();
 
         if (resolved.OwnerEntityId is not null && resolved.OwnerEntityName is null)
@@ -272,10 +302,7 @@ internal sealed partial class MediaManager(
         if (resolved.Category is not null)
             resolved = resolved with { Category = MediaCategories.Normalize(resolved.Category) };
 
-        var rows  = await store.QueryAsync(resolved, ct).ConfigureAwait(false);
-        var total = await store.CountAsync(resolved, ct).ConfigureAwait(false);
-
-        return new MediaPage([.. rows.Select(MediaFileInfo.From)], total, resolved.Skip, resolved.Take);
+        return resolved;
     }
 
     /// <inheritdoc/>
@@ -467,6 +494,11 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         // A link whose file is missing from the live listing is a link to a soft-deleted file. It is
         // skipped rather than returned with a tombstone, because every other read here means "live".
+        //
+        // That is the only reason a link can go missing, and only because ListCoreAsync refuses to
+        // truncate. It reads one page of files while the links above are read whole, so a quietly
+        // capped listing would drop live links here too — and they would be dropped as though they
+        // had been deleted, which is a different and much less obvious lie.
         return
         [
             .. links
@@ -481,16 +513,18 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(category);
 
-        var page = await manager.ListAsync(
-            new MediaQuery
-            {
-                OwnerEntityName = owner.EntityName,
-                OwnerEntityId   = owner.EntityId,
-                Category        = category,
-                Take            = MediaQuery.MaxTake
-            }, ct).ConfigureAwait(false);
+        var query = new MediaQuery
+        {
+            OwnerEntityName = owner.EntityName,
+            OwnerEntityId   = owner.EntityId,
+            Category        = category,
+            Take            = MediaQuery.MaxTake
+        };
 
-        return page.Items;
+        var files = await manager.ListItemsAsync(query, ct).ConfigureAwait(false);
+        await RefuseToTruncateAsync(files, query, $"in the '{category}' category", ct).ConfigureAwait(false);
+
+        return files;
     }
 
     /// <inheritdoc/>
@@ -719,17 +753,60 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
     private async Task<IReadOnlyList<MediaFileInfo>> ListCoreAsync(string? role, CancellationToken ct)
     {
-        var page = await manager.ListAsync(
-            new MediaQuery
-            {
-                OwnerEntityName = owner.EntityName,
-                OwnerEntityId   = owner.EntityId,
-                Role            = role,
-                SortBy          = MediaSortBy.SortOrder,
-                Descending      = false,
-                Take            = MediaQuery.MaxTake
-            }, ct).ConfigureAwait(false);
+        var query = new MediaQuery
+        {
+            OwnerEntityName = owner.EntityName,
+            OwnerEntityId   = owner.EntityId,
+            Role            = role,
+            SortBy          = MediaSortBy.SortOrder,
+            Descending      = false,
+            Take            = MediaQuery.MaxTake
+        };
 
-        return page.Items;
+        var files = await manager.ListItemsAsync(query, ct).ConfigureAwait(false);
+        await RefuseToTruncateAsync(files, query, role is null ? "attached" : $"in the '{role}' role", ct)
+            .ConfigureAwait(false);
+
+        return files;
+    }
+
+    /// <summary>
+    /// Refuses to answer "everything attached here" with a page of it.
+    /// <para>
+    /// These methods promise every file, and one query cannot return more than
+    /// <see cref="MediaQuery.MaxTake"/> of them. Returning the first page and saying nothing would
+    /// hide the rest from a caller with no way to know they existed — a gallery quietly missing
+    /// its tail, or a screen that offers to delete "all" of something it never saw. So an entity
+    /// holding more than a page of files is reported, and the caller is pointed at the paged
+    /// listing that can actually express the question.
+    /// </para>
+    /// <para>
+    /// The probe costs nothing in the ordinary case, because it only runs when the page came back
+    /// exactly full — which is the one situation where a full page and a truncated one look the
+    /// same from here. An entity with five images never reaches it.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidMediaException">More files match than one page can hold.</exception>
+    private async Task RefuseToTruncateAsync(
+        IReadOnlyList<MediaFileInfo> page,
+        MediaQuery query,
+        string description,
+        CancellationToken ct)
+    {
+        if (page.Count < MediaQuery.MaxTake)
+            return;
+
+        var beyond = await manager
+            .ListItemsAsync(query with { Skip = MediaQuery.MaxTake, Take = 1 }, ct)
+            .ConfigureAwait(false);
+
+        if (beyond.Count == 0)
+            return;
+
+        throw new InvalidMediaException(
+            $"{owner.EntityName} {owner.EntityId} has more than {MediaQuery.MaxTake} files {description}, which is " +
+            "more than one query returns — so this would have handed back the first page as though it were all of " +
+            "them. Page it instead: IMediaManager.ListAsync with OwnerEntityName, OwnerEntityId and Role set, and " +
+            "Skip and Take of your own, which reports the total as well.");
     }
 }

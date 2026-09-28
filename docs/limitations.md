@@ -151,6 +151,32 @@ An attachment carries an owner, a role and a position, and nothing else. Per-lin
 caption, or a "visible from" date belong in your own table keyed by the media id and your entity —
 adding them here would make every application pay for one application's field.
 
+## An entity's own listings are one page, or an error
+
+`media.For(entity).ListAsync()` and its siblings return a list, not a page, so they promise every
+file attached to that entity. A query returns at most 500 rows, so an entity holding more than that
+is refused with an `InvalidMediaException` rather than answered with the first 500 — a truncated
+list is indistinguishable from a complete one, and nothing about the result would tell the caller
+that the rest exist.
+
+Page it with the query API, which was always the paged one:
+
+```csharp
+var page = await media.ListAsync(new MediaQuery
+{
+    OwnerEntityName = "Product",
+    OwnerEntityId   = id.ToString(),
+    Role            = "gallery",
+    SortBy          = MediaSortBy.SortOrder,
+    Descending      = false,
+    Skip            = 0,
+    Take            = 100
+}, ct);
+```
+
+Raising the ceiling instead was the other option and is the wrong one: an entity with ten thousand
+attachments would then quietly turn one gallery render into a ten-thousand-row read.
+
 ## No quotas
 
 Nothing limits how much one user or one entity may store. The per-file limit is a per-file limit.

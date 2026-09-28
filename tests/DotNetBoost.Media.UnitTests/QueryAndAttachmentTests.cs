@@ -913,3 +913,166 @@ public class AttachmentQueryTests
             }));
     }
 }
+
+/// <summary>
+/// What an entity's own listings cost, and what they do when the answer will not fit in one.
+/// </summary>
+public class AccessorListingTests
+{
+    private sealed class Product
+    {
+        public int Id { get; set; }
+    }
+
+    private static async Task AttachAsync(Harness harness, Product product, int count, string? role = null)
+    {
+        for (var i = 0; i < count; i++)
+            await harness.Media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png(), $"{i}.png", role: role));
+    }
+
+    /// <summary>
+    /// The accessor discards the total, so running the aggregate that produces it doubles the cost
+    /// of drawing a product's gallery for a number nobody reads.
+    /// </summary>
+    [Fact]
+    public async Task Listing_an_entitys_files_costs_one_query_and_no_count()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, 3);
+        harness.Store.ResetCounters();
+
+        var files = await harness.Media.For(product).ListAsync();
+
+        Assert.Equal(3, files.Count);
+        Assert.Equal(1, harness.Store.Queries);
+        Assert.Equal(0, harness.Store.Counts);
+    }
+
+    [Fact]
+    public async Task Listing_a_role_and_a_category_cost_no_count_either()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await harness.Media.For(product).UploadAsync(
+            TestMedia.Upload(TestMedia.Png(), category: "photos", role: "gallery"));
+
+        harness.Store.ResetCounters();
+        await harness.Media.For(product).ListByRoleAsync("gallery");
+        await harness.Media.For(product).ListByCategoryAsync("photos");
+
+        Assert.Equal(2, harness.Store.Queries);
+        Assert.Equal(0, harness.Store.Counts);
+    }
+
+    /// <summary>
+    /// The public listing still owes its caller a total, so it still pays for one. Removing the
+    /// count from the accessor must not have removed it from here.
+    /// </summary>
+    [Fact]
+    public async Task The_public_listing_still_reports_a_total()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, 3);
+        harness.Store.ResetCounters();
+
+        var page = await harness.Media.ListAsync(new MediaQuery { Take = 2 });
+
+        Assert.Equal(2, page.Items.Count);
+        Assert.Equal(3, page.Total);
+        Assert.Equal(1, harness.Store.Counts);
+    }
+
+    /// <summary>
+    /// A full page and a truncated one look identical from the accessor, so it asks. One extra
+    /// query, and only for an entity sitting exactly on the boundary.
+    /// </summary>
+    [Fact]
+    public async Task An_entity_holding_exactly_one_page_is_answered_in_full()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, MediaQuery.MaxTake);
+        harness.Store.ResetCounters();
+
+        var files = await harness.Media.For(product).ListAsync();
+
+        Assert.Equal(MediaQuery.MaxTake, files.Count);
+
+        // The probe for a page beyond this one — and nothing more, since there was none.
+        Assert.Equal(2, harness.Store.Queries);
+        Assert.Equal(0, harness.Store.Counts);
+    }
+
+    /// <summary>
+    /// The method promises every file attached to the entity. One query cannot return more than a
+    /// page of them, and handing back the first page would be indistinguishable from a complete
+    /// answer — a gallery quietly missing its tail.
+    /// </summary>
+    [Fact]
+    public async Task An_entity_holding_more_than_one_page_is_refused_rather_than_truncated()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, MediaQuery.MaxTake + 1);
+
+        var refused = await Assert.ThrowsAsync<InvalidMediaException>(
+            () => harness.Media.For(product).ListAsync());
+
+        // The caller is left somewhere to go, rather than simply told no.
+        Assert.Contains("ListAsync", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("Skip", refused.Message, StringComparison.Ordinal);
+
+        // And the paged listing it names does answer the question.
+        var page = await harness.Media.ListAsync(new MediaQuery
+        {
+            OwnerEntityName = "Product",
+            OwnerEntityId   = "1",
+            Skip            = MediaQuery.MaxTake,
+            Take            = 10
+        });
+
+        Assert.Equal(MediaQuery.MaxTake + 1, page.Total);
+        Assert.Single(page.Items);
+    }
+
+    /// <summary>
+    /// The role listing caps the same way and has to refuse the same way — it is the gallery that
+    /// grows, not usually the entity as a whole.
+    /// </summary>
+    [Fact]
+    public async Task A_role_holding_more_than_one_page_is_refused_too()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, MediaQuery.MaxTake + 1, role: "gallery");
+
+        var refused = await Assert.ThrowsAsync<InvalidMediaException>(
+            () => harness.Media.For(product).ListByRoleAsync("gallery"));
+
+        Assert.Contains("gallery", refused.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// ListWithRolesAsync reads the links whole and the files a page at a time, so a silently
+    /// capped file listing would drop live links as though their files had been deleted.
+    /// </summary>
+    [Fact]
+    public async Task Listing_with_roles_refuses_rather_than_reporting_live_files_as_gone()
+    {
+        var harness = Harness.Create();
+        var product = new Product { Id = 1 };
+
+        await AttachAsync(harness, product, MediaQuery.MaxTake + 1);
+
+        await Assert.ThrowsAsync<InvalidMediaException>(
+            () => harness.Media.For(product).ListWithRolesAsync());
+    }
+}
