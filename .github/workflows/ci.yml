@@ -16,7 +16,12 @@ env:
   DOTNET_NOLOGO: true
   DOTNET_CLI_TELEMETRY_OPTOUT: true
   NUGET_FEED: https://api.nuget.org/v3/index.json
+  # Minimums enforced by the coverage-gate job below. Branch coverage is always the
+  # lower of the two — a line runs the first time any path reaches it, while a branch
+  # needs every path taken — so it gets its own, lower floor rather than dragging the
+  # line minimum down to meet it.
   COVERAGE_THRESHOLD: 80
+  BRANCH_COVERAGE_THRESHOLD: 75
 
 jobs:
   # ───────────────────────────────────────────────────────────────────────
@@ -76,13 +81,15 @@ jobs:
           name: unit-test-results
           path: ./test-results
 
-      - name: Coverage gate
+      # Merges the per-TFM cobertura files the unit-test job produced into one report.
+      # JsonSummary is what the threshold check below reads; it carries the merged
+      # percentages, so the check never has to pick between the net8.0 and net10.0 runs.
+      - name: Generate coverage report
         uses: danielpalme/ReportGenerator-GitHub-Action@5
         with:
           reports: './test-results/**/coverage.cobertura.xml'
           targetdir: './coverage-html'
-          reporttypes: 'HtmlInline;Badges;MarkdownSummaryGithub'
-          minimumCoverage: ${{ env.COVERAGE_THRESHOLD }}
+          reporttypes: 'HtmlInline;Badges;MarkdownSummaryGithub;JsonSummary'
           tag: ${{ github.run_number }}
 
       - name: Publish coverage summary
@@ -91,7 +98,59 @@ jobs:
           [ -f "./coverage-html/SummaryGithub.md" ] && cat ./coverage-html/SummaryGithub.md >> $GITHUB_STEP_SUMMARY || true
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with: { name: coverage-html, path: ./coverage-html/ }
+
+      # Last in the job, and everything above it runs on failure, so a build that trips the
+      # gate still leaves behind the HTML report and the step summary showing what slipped.
+      - name: Enforce coverage thresholds
+        run: |
+          set -euo pipefail
+
+          summary=./coverage-html/Summary.json
+          if [ ! -f "${summary}" ]; then
+            echo "::error::${summary} not found - the report step produced no JsonSummary"
+            exit 1
+          fi
+
+          line=$(jq -r '.summary.linecoverage // empty' "${summary}")
+          branch=$(jq -r '.summary.branchcoverage // empty' "${summary}")
+
+          # An empty line coverage means the run measured nothing at all, which is the one
+          # case a percentage comparison cannot catch: it must fail rather than wave through.
+          if [ -z "${line}" ]; then
+            echo "::error::No line coverage recorded in ${summary}"
+            exit 1
+          fi
+
+          echo "Line coverage:   ${line}% (minimum ${COVERAGE_THRESHOLD}%)"
+          echo "Branch coverage: ${branch:-n/a}% (minimum ${BRANCH_COVERAGE_THRESHOLD}%)"
+
+          {
+            echo "### Coverage gate"
+            echo ""
+            echo "| Metric | Measured | Minimum |"
+            echo "| --- | --- | --- |"
+            echo "| Line | ${line}% | ${COVERAGE_THRESHOLD}% |"
+            echo "| Branch | ${branch:-n/a}% | ${BRANCH_COVERAGE_THRESHOLD}% |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # These are decimals, which bash cannot compare; awk exits 0 when it is under.
+          failed=0
+
+          if awk -v v="${line}" -v t="${COVERAGE_THRESHOLD}" 'BEGIN { exit !(v + 0 < t + 0) }'; then
+            echo "::error::Line coverage ${line}% is below the ${COVERAGE_THRESHOLD}% minimum"
+            failed=1
+          fi
+
+          # Branch coverage is absent from the summary when nothing branches. That is a real
+          # possibility for a small report and is not a failure, so only check a value present.
+          if [ -n "${branch}" ] && awk -v v="${branch}" -v t="${BRANCH_COVERAGE_THRESHOLD}" 'BEGIN { exit !(v + 0 < t + 0) }'; then
+            echo "::error::Branch coverage ${branch}% is below the ${BRANCH_COVERAGE_THRESHOLD}% minimum"
+            failed=1
+          fi
+
+          exit "${failed}"
 
   # ───────────────────────────────────────────────────────────────────────
   provider-tests:
