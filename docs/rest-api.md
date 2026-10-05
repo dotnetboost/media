@@ -299,6 +299,27 @@ There is deliberately no endpoint for `IMediaAccessor.DeleteAllAsync`. It exists
 is deleted, and that belongs in your own code next to deleting the entity — not in one request that
 destroys an arbitrary entity's media.
 
+## Cleaning up your own records when a file is deleted here
+
+`DELETE {prefix}/{id}` is the one delete path on which **none of your code runs**. If your
+application keeps records of its own about a file — per-language alt text, a search index entry —
+nothing on this path knows to clear them, and a direct API caller will never call whatever endpoint
+of yours does.
+
+Register a handler and it covers this path along with every other:
+
+```csharp
+.OnFilesDeleted(async (serviceProvider, ids, ct) =>
+{
+    var db = serviceProvider.GetRequiredService<AppDbContext>();
+    await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+})
+```
+
+Its failures are logged and swallowed, so a handler that cannot reach its own table does not turn
+this endpoint's `204` into a `500` for a delete that did in fact happen. See
+[attaching to entities](attaching-to-entities.md#cleaning-up-your-own-records-about-a-file).
+
 ## Status codes
 
 | | | |

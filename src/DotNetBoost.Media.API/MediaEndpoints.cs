@@ -222,6 +222,15 @@ namespace Microsoft.Extensions.DependencyInjection
         /// the second, and gets the attachment ids from <c>GET {prefix}/{id}</c>.
         /// </para>
         /// <para>
+        /// <c>DELETE {prefix}/{id}</c> is also the one delete path no application code runs on, so
+        /// records an application keeps about a file — per-language alt text, a search index entry —
+        /// have nothing here to clear them. Register an
+        /// <see cref="DotNetBoost.Media.Core.Interfaces.IMediaFilesDeletedHandler"/> through
+        /// <c>.OnFilesDeleted(…)</c> and it covers this path along with every other; a handler's
+        /// failure is logged and swallowed, so it cannot turn this endpoint's 204 into a 500 for a
+        /// delete that did happen.
+        /// </para>
+        /// <para>
         /// There is deliberately no "delete everything this entity has" endpoint.
         /// <c>IMediaAccessor.DeleteAllAsync</c> exists for when an entity is deleted, and that is a
         /// decision the application makes in its own code, next to deleting the entity — not

@@ -171,6 +171,26 @@ await media.For(product).ListByRoleAsync("gallery", ct);
 await media.For(product).ListByCategoryAsync("product-images", ct);
 ```
 
+For a **page** of entities, use `ForMany` rather than either: `MediaQuery` takes one owner id, and
+the accessor is one owner by construction, so a listing built on them costs a query per row.
+
+```csharp
+var heroes = await media.ForMany(products).GetByRoleAsync("primary", ct);
+```
+
+One store round trip whatever the page holds, with the file rows joined in — see
+[attaching to entities](attaching-to-entities.md#reading-a-whole-page-of-entities-at-once).
+
+To filter **before** paging — "the first 20 products that have an image" — a known set of ids
+cannot answer, and the EF Core package has a composable queryable for it:
+
+```csharp
+var withImage = db.OwnersWithMedia<Product>("primary");
+
+await db.Products.Where(p => withImage.Contains(p.Id.ToString()))
+    .OrderBy(p => p.Name).Skip(skip).Take(take).ToListAsync(ct);
+```
+
 ## Indexes
 
 Each store creates five, matching the queries the library actually issues.
@@ -187,7 +207,7 @@ On the attachments:
 | Index | Serves |
 |---|---|
 | `(MediaFileId, OwnerEntityName, OwnerEntityId, Role)` — unique | one file may hold several roles on one entity, but not the same role twice. It is also what makes attaching idempotent |
-| `(OwnerEntityName, OwnerEntityId, Role, SortOrder)` | "this entity's files, in the order it put them in" — filter, role narrowing and sort from one index |
+| `(OwnerEntityName, OwnerEntityId, Role, SortOrder)` | "this entity's files, in the order it put them in" — filter, role narrowing and sort from one index. It leads with the owner name, so it also serves a bulk read over many ids and `OwnersWithMedia<T>()` |
 | `(MediaFileId)` | the cascade when a file is deleted, and the sole-holder test behind `DeleteAllAsync` |
 
 A tag search is a `LIKE '%…%'`, which no index can serve. That is the cost of one column instead of

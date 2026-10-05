@@ -1,6 +1,8 @@
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
+using MongoDB.Bson;
+using MongoDB.Bson.Serialization;
 using MongoDB.Driver;
 using System.Text.RegularExpressions;
 
@@ -28,6 +30,12 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
     private readonly IMongoCollection<MediaAttachment> _attachments =
         (database ?? throw new ArgumentNullException(nameof(database)))
         .GetCollection<MediaAttachment>((options ?? throw new ArgumentNullException(nameof(options))).MediaAttachmentsCollection);
+
+    /// <summary>
+    /// The files collection's name, for the one read that joins to it by name rather than through
+    /// its typed collection — a <c>$lookup</c> stage names its foreign collection as a string.
+    /// </summary>
+    private readonly string _filesCollectionName = options.MediaFilesCollection;
 
     private static readonly FilterDefinitionBuilder<MediaFile> Filter = Builders<MediaFile>.Filter;
 
@@ -432,6 +440,92 @@ public sealed class MongoMediaStore(IMongoDatabase database, MongoDbOptions opti
             .ToListAsync(ct)
             .ConfigureAwait(false);
     }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        ArgumentNullException.ThrowIfNull(entityIds);
+
+        if (entityIds.Count == 0)
+            return [];
+
+        var ids = new BsonArray(entityIds.Distinct(StringComparer.Ordinal));
+
+        var match = new BsonDocument
+        {
+            { nameof(MediaAttachment.OwnerEntityName), entityName },
+            { nameof(MediaAttachment.OwnerEntityId), new BsonDocument("$in", ids) }
+        };
+
+        if (role is not null)
+            match.Add(nameof(MediaAttachment.Role), role);
+
+        // One aggregation rather than a read per owner — and the file joined in rather than fetched
+        // afterwards, so the whole bulk read is a single command however many owners it covers.
+        //
+        // Written as BSON stages and deserialized through the registered class maps, rather than
+        // through the driver's typed $lookup into a joined POCO: that route re-automaps the result
+        // type and would lose the Guid serializers this store configures by hand, which are what
+        // make a MediaFileId compare equal to the _id it names.
+        var pipeline = new[]
+        {
+            new BsonDocument("$match", match),
+            new BsonDocument("$lookup", new BsonDocument
+            {
+                { "from", _filesCollectionName },
+                { "localField", nameof(MediaAttachment.MediaFileId) },
+                { "foreignField", "_id" },
+                { "as", JoinedFileField }
+            }),
+            // An inner join, so a link whose file is gone drops out instead of returning half a
+            // row. It cannot normally exist — deleting a file removes its links outright, soft or
+            // not — and this keeps the read honest if one ever does.
+            new BsonDocument("$unwind", "$" + JoinedFileField),
+            // Live files only. A live document has no DeletedAt field at all rather than a null
+            // one: the file map sets IgnoreIfNull, so both spellings have to be allowed for.
+            new BsonDocument("$match", new BsonDocument("$or", new BsonArray
+            {
+                new BsonDocument($"{JoinedFileField}.{nameof(MediaFile.DeletedAt)}", BsonNull.Value),
+                new BsonDocument($"{JoinedFileField}.{nameof(MediaFile.DeletedAt)}", new BsonDocument("$exists", false))
+            })),
+            new BsonDocument("$sort", new BsonDocument
+            {
+                { nameof(MediaAttachment.OwnerEntityId), 1 },
+                { nameof(MediaAttachment.Role), 1 },
+                { nameof(MediaAttachment.SortOrder), 1 },
+                { "_id", 1 }
+            })
+        };
+
+        var documents = await _attachments
+            .Aggregate<BsonDocument>(pipeline, options: null, ct)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        var rows = new List<MediaOwnerAttachment>(documents.Count);
+
+        foreach (var document in documents)
+        {
+            // Lifted out before the link is deserialized: the joined file sits inside the
+            // attachment document, and MediaAttachment's map has no member to put it in.
+            var file = document[JoinedFileField].AsBsonDocument;
+            document.Remove(JoinedFileField);
+
+            rows.Add(new MediaOwnerAttachment(
+                BsonSerializer.Deserialize<MediaAttachment>(document),
+                BsonSerializer.Deserialize<MediaFile>(file)));
+        }
+
+        return rows;
+    }
+
+    /// <summary>Where the joined file document is parked inside the attachment document.</summary>
+    private const string JoinedFileField = "joinedMediaFile";
 
     /// <inheritdoc/>
     public async Task<IReadOnlySet<Guid>> FindSharedAsync(

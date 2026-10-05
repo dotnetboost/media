@@ -43,7 +43,7 @@ internal static class MediaFileMapper
         return await reader.ReadAsync(ct).ConfigureAwait(false) ? Read(reader, ordinals) : null;
     }
 
-    private static MediaFile Read(DbDataReader row, Ordinals o) => new()
+    internal static MediaFile Read(DbDataReader row, Ordinals o) => new()
     {
         Id               = Guid(row, o.Id),
         FileName         = row.GetString(o.FileName),
@@ -120,25 +120,33 @@ internal static class MediaFileMapper
         row.IsDBNull(ordinal) ? null : row.GetString(ordinal);
 
     /// <summary>Column positions, resolved once per reader.</summary>
-    private sealed class Ordinals
+    internal sealed class Ordinals
     {
-        public Ordinals(DbDataReader row)
+        /// <param name="row">The reader whose columns to locate.</param>
+        /// <param name="prefix">
+        /// What the columns were aliased to, for the one statement that selects this table beside
+        /// the attachment table — where both have an <c>Id</c> and a <c>CreatedAt</c>, and a name
+        /// lookup cannot tell them apart. Empty for every other read.
+        /// </param>
+        public Ordinals(DbDataReader row, string prefix = "")
         {
-            Id               = row.GetOrdinal(nameof(MediaFile.Id));
-            FileName         = row.GetOrdinal(nameof(MediaFile.FileName));
-            ContentType      = row.GetOrdinal(nameof(MediaFile.ContentType));
-            Size             = row.GetOrdinal(nameof(MediaFile.Size));
-            StorageProvider  = row.GetOrdinal(nameof(MediaFile.StorageProvider));
-            StorageContainer = row.GetOrdinal(nameof(MediaFile.StorageContainer));
-            StoragePath      = row.GetOrdinal(nameof(MediaFile.StoragePath));
-            Checksum         = row.GetOrdinal(nameof(MediaFile.Checksum));
-            Category         = row.GetOrdinal(nameof(MediaFile.Category));
-            Tags             = row.GetOrdinal(nameof(MediaFile.Tags));
-            Metadata         = row.GetOrdinal(nameof(MediaFile.Metadata));
-            UploadedBy       = row.GetOrdinal(nameof(MediaFile.UploadedBy));
-            CreatedAt        = row.GetOrdinal(nameof(MediaFile.CreatedAt));
-            UpdatedAt        = row.GetOrdinal(nameof(MediaFile.UpdatedAt));
-            DeletedAt        = row.GetOrdinal(nameof(MediaFile.DeletedAt));
+            int O(string column) => row.GetOrdinal(prefix + column);
+
+            Id               = O(nameof(MediaFile.Id));
+            FileName         = O(nameof(MediaFile.FileName));
+            ContentType      = O(nameof(MediaFile.ContentType));
+            Size             = O(nameof(MediaFile.Size));
+            StorageProvider  = O(nameof(MediaFile.StorageProvider));
+            StorageContainer = O(nameof(MediaFile.StorageContainer));
+            StoragePath      = O(nameof(MediaFile.StoragePath));
+            Checksum         = O(nameof(MediaFile.Checksum));
+            Category         = O(nameof(MediaFile.Category));
+            Tags             = O(nameof(MediaFile.Tags));
+            Metadata         = O(nameof(MediaFile.Metadata));
+            UploadedBy       = O(nameof(MediaFile.UploadedBy));
+            CreatedAt        = O(nameof(MediaFile.CreatedAt));
+            UpdatedAt        = O(nameof(MediaFile.UpdatedAt));
+            DeletedAt        = O(nameof(MediaFile.DeletedAt));
         }
 
         public int Id { get; }
@@ -179,7 +187,7 @@ internal static class MediaAttachmentMapper
         return rows;
     }
 
-    private static MediaAttachment Read(DbDataReader row, Ordinals o) => new()
+    internal static MediaAttachment Read(DbDataReader row, Ordinals o) => new()
     {
         Id              = MediaFileMapper.Guid(row, o.Id),
         MediaFileId     = MediaFileMapper.Guid(row, o.MediaFileId),
@@ -190,18 +198,20 @@ internal static class MediaAttachmentMapper
         CreatedAt       = MediaFileMapper.Utc(row, o.CreatedAt)!.Value
     };
 
-    /// <summary>Column positions, resolved once per reader.</summary>
-    private sealed class Ordinals
+    /// <inheritdoc cref="MediaFileMapper.Ordinals"/>
+    internal sealed class Ordinals
     {
-        public Ordinals(DbDataReader row)
+        public Ordinals(DbDataReader row, string prefix = "")
         {
-            Id              = row.GetOrdinal(nameof(MediaAttachment.Id));
-            MediaFileId     = row.GetOrdinal(nameof(MediaAttachment.MediaFileId));
-            OwnerEntityName = row.GetOrdinal(nameof(MediaAttachment.OwnerEntityName));
-            OwnerEntityId   = row.GetOrdinal(nameof(MediaAttachment.OwnerEntityId));
-            Role            = row.GetOrdinal(nameof(MediaAttachment.Role));
-            SortOrder       = row.GetOrdinal(nameof(MediaAttachment.SortOrder));
-            CreatedAt       = row.GetOrdinal(nameof(MediaAttachment.CreatedAt));
+            int O(string column) => row.GetOrdinal(prefix + column);
+
+            Id              = O(nameof(MediaAttachment.Id));
+            MediaFileId     = O(nameof(MediaAttachment.MediaFileId));
+            OwnerEntityName = O(nameof(MediaAttachment.OwnerEntityName));
+            OwnerEntityId   = O(nameof(MediaAttachment.OwnerEntityId));
+            Role            = O(nameof(MediaAttachment.Role));
+            SortOrder       = O(nameof(MediaAttachment.SortOrder));
+            CreatedAt       = O(nameof(MediaAttachment.CreatedAt));
         }
 
         public int Id { get; }
@@ -211,5 +221,35 @@ internal static class MediaAttachmentMapper
         public int Role { get; }
         public int SortOrder { get; }
         public int CreatedAt { get; }
+    }
+}
+
+/// <summary>
+/// Reads the joined rows behind a bulk owner read: one attachment and the file it points at, out
+/// of the one reader both arrive in.
+/// <para>
+/// The two tables share <c>Id</c> and <c>CreatedAt</c>, so the statement aliases every column with
+/// a per-table prefix and this resolves each set under its own. Without that, reading by name
+/// would quietly pick whichever of the two the engine listed first.
+/// </para>
+/// </summary>
+internal static class MediaOwnerAttachmentMapper
+{
+    /// <summary>Reads every row the reader has left.</summary>
+    public static async Task<List<MediaOwnerAttachment>> ReadAllAsync(DbDataReader reader, CancellationToken ct)
+    {
+        var links = new MediaAttachmentMapper.Ordinals(reader, DapperStatements.AttachmentPrefix);
+        var files = new MediaFileMapper.Ordinals(reader, DapperStatements.FilePrefix);
+
+        var rows = new List<MediaOwnerAttachment>();
+
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            rows.Add(new MediaOwnerAttachment(
+                MediaAttachmentMapper.Read(reader, links),
+                MediaFileMapper.Read(reader, files)));
+        }
+
+        return rows;
     }
 }

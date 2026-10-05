@@ -303,6 +303,7 @@ public sealed class EndToEndTests(PostgreSqlFixture postgres) : IAsyncLifetime
             MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
+            [],
             NullLogger<MediaManager>.Instance);
     }
 

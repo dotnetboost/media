@@ -1,3 +1,4 @@
+using System.Globalization;
 using DotNetBoost.Media.Core;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Models;
@@ -804,4 +805,147 @@ public abstract class StoreContractTests : IAsyncLifetime
     [Fact]
     public async Task FindShared_of_nothing_is_nothing() =>
         Assert.Empty(await Store.FindSharedAsync([], new MediaOwner("Product", "1")));
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_answers_about_every_owner_at_once()
+    {
+        var one = Row("one.png");
+        var two = Row("two.png");
+
+        await Store.AddAsync(one);
+        await Store.AddAsync(two);
+
+        await Store.AddAttachmentAsync(Link(one.Id, "Product", "1", "primary"));
+        await Store.AddAttachmentAsync(Link(two.Id, "Product", "2", "primary"));
+        // Not asked about, and a different entity type with the same key as one that is.
+        await Store.AddAttachmentAsync(Link(one.Id, "Product", "3", "primary"));
+        await Store.AddAttachmentAsync(Link(one.Id, "Customer", "1", "primary"));
+
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1", "2"]);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(["1", "2"], rows.Select(r => r.Attachment.OwnerEntityId));
+
+        // The file is joined in, not left to a second read — that is the whole point of the method.
+        Assert.Equal(["one.png", "two.png"], rows.Select(r => r.File.FileName));
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_orders_by_owner_then_role_then_position()
+    {
+        // Two files, because the same file cannot hold one role on one owner twice — that pair is
+        // the uniqueness constraint, and a gallery of two needs two files.
+        var first  = Row("first.png");
+        var second = Row("second.png");
+
+        await Store.AddAsync(first);
+        await Store.AddAsync(second);
+
+        await Store.AddAttachmentAsync(Link(first.Id, "Product", "2", "primary"));
+        await Store.AddAttachmentAsync(Link(second.Id, "Product", "1", "gallery", sortOrder: 1));
+        await Store.AddAttachmentAsync(Link(first.Id, "Product", "1", "gallery", sortOrder: 0));
+        await Store.AddAttachmentAsync(Link(first.Id, "Product", "1", "primary"));
+
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1", "2"]);
+
+        // Owner first, then role, then position within the role — the same order
+        // ListAttachmentsAsync gives one owner, so a bulk read and a single read agree.
+        Assert.Equal(
+            [("1", "gallery", 0), ("1", "gallery", 1), ("1", "primary", 0), ("2", "primary", 0)],
+            rows.Select(r => (r.Attachment.OwnerEntityId, r.Attachment.Role, r.Attachment.SortOrder)));
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_narrows_to_one_role()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "primary"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "gallery"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "2", "gallery"));
+
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1", "2"], "gallery");
+
+        Assert.Equal(2, rows.Count);
+        Assert.All(rows, r => Assert.Equal("gallery", r.Attachment.Role));
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_lists_a_file_once_per_role_it_holds()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "primary"));
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1", "seo"));
+
+        // Per link, not per file: the question is what this entity uses the file FOR, and it uses
+        // it for two things.
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1"]);
+
+        Assert.Equal(["primary", "seo"], rows.Select(r => r.Attachment.Role));
+        Assert.All(rows, r => Assert.Equal(row.Id, r.File.Id));
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_leaves_out_a_link_to_a_deleted_file()
+    {
+        var live = Row("live.png");
+        var gone = Row("gone.png");
+
+        await Store.AddAsync(live);
+        await Store.AddAsync(gone);
+
+        await Store.AddAttachmentAsync(Link(live.Id, "Product", "1"));
+        await Store.AddAttachmentAsync(Link(gone.Id, "Product", "1", "gallery"));
+
+        // Tombstoned directly, rather than through the engine, which would have removed the link
+        // along with it. This is the pairing the join has to refuse: half a row is worse than none.
+        gone.DeletedAt = new DateTime(2026, 9, 27, 11, 0, 0, DateTimeKind.Utc);
+        await Store.UpdateAsync(gone);
+
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1"]);
+
+        Assert.Equal(live.Id, Assert.Single(rows).File.Id);
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_says_nothing_about_an_owner_with_nothing_attached()
+    {
+        var row = Row();
+        await Store.AddAsync(row);
+        await Store.AddAttachmentAsync(Link(row.Id, "Product", "1"));
+
+        // Absent rather than present-and-empty: the store answers about rows, and turning "no rows
+        // for this id" into an empty entry needs the list of ids asked about, which is the
+        // engine's. IMediaBulkAccessor is where that happens.
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ["1", "2"]);
+
+        Assert.Equal("1", Assert.Single(rows).Attachment.OwnerEntityId);
+    }
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_of_no_owners_is_nothing() =>
+        Assert.Empty(await Store.ListAttachmentsForOwnersAsync("Product", []));
+
+    [Fact]
+    public async Task ListAttachmentsForOwners_handles_more_owners_than_a_page_would_hold()
+    {
+        // Fifty owners, which is what a listing page actually asks about, and the reason this
+        // method exists. A store that expands the ids into the statement has to still be able to
+        // parse it at this size.
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var ids = Enumerable.Range(1, 50).Select(i => i.ToString(CultureInfo.InvariantCulture)).ToArray();
+
+        foreach (var id in ids)
+            await Store.AddAttachmentAsync(Link(row.Id, "Product", id));
+
+        var rows = await Store.ListAttachmentsForOwnersAsync("Product", ids);
+
+        Assert.Equal(50, rows.Count);
+        Assert.Equal(50, rows.Select(r => r.Attachment.OwnerEntityId).Distinct().Count());
+    }
 }

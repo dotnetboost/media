@@ -18,9 +18,15 @@ internal sealed partial class MediaManager(
     IMediaRoleRegistry roles,
     MediaOptions options,
     TimeProvider timeProvider,
+    IEnumerable<IMediaFilesDeletedHandler> deletedHandlers,
     ILogger<MediaManager> logger) : IMediaManager
 {
     private readonly MediaValidator _validator = new(options);
+
+    // Materialized once rather than enumerated per delete: the container hands back a fresh
+    // enumerable each time, and the order matters — the contract promises registration order,
+    // which is the order the container yields them in.
+    private readonly IMediaFilesDeletedHandler[] _deletedHandlers = [.. deletedHandlers];
 
     /// <summary>The engine's clock, for the accessor that writes attachment rows beside it.</summary>
     internal DateTime Now => timeProvider.GetUtcNow().UtcDateTime;
@@ -204,6 +210,11 @@ internal sealed partial class MediaManager(
             return false;
 
         await DeleteFileAsync(file, ct).ConfigureAwait(false);
+
+        // Announced only on the path that actually deleted something: a delete of an id that was
+        // already gone tells a handler nothing it can act on, and would have it clearing records
+        // for a file some earlier delete already reported.
+        await NotifyDeletedAsync([file.Id], ct).ConfigureAwait(false);
         return true;
     }
 
@@ -338,6 +349,85 @@ internal sealed partial class MediaManager(
         return new MediaAccessor(this, store, new MediaOwner(entityName, entityId));
     }
 
+    /// <inheritdoc/>
+    public IMediaBulkAccessor ForMany(string entityName, IReadOnlyCollection<object> entityIds)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        ArgumentNullException.ThrowIfNull(entityIds);
+
+        // Formatted here, through the same function For(entity) ends up in, so a caller may pass
+        // ints, longs, Guids or strings and the keys it returns are the strings the rows hold.
+        // Deduplicated in the order given: the dictionary keys are this list, and a page that
+        // happens to contain one id twice should not read it twice or answer about it twice.
+        return ForKeys(entityName, DistinctKeys(entityIds.Select(EntityKey.ToKeyString)));
+    }
+
+    /// <inheritdoc/>
+    public IMediaBulkAccessor ForMany<T>(IEnumerable<T> entities)
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+
+        // The runtime type of each instance, not typeof(T): T is frequently a base class or an
+        // interface, and For(entity) reads the name off the instance for the same reason.
+        string? name = null;
+        var     keys = new List<string>();
+
+        foreach (var entity in entities)
+        {
+            ArgumentNullException.ThrowIfNull(entity, nameof(entities));
+
+            var entityName = MediaEntityNames.Of(entity);
+
+            if (name is null)
+            {
+                name = entityName;
+            }
+            else if (!string.Equals(name, entityName, StringComparison.Ordinal))
+            {
+                // One entity type per read, because one read is one statement over one entity name.
+                // Guessing — reading them all under the first name — would attach the second type's
+                // owners to keys that belong to the first, and the mix-up would surface as missing
+                // images rather than as an error.
+                throw new InvalidOperationException(
+                    $"ForMany was given both {name} and {entityName}. One bulk read covers one entity type: " +
+                    "its owner name is part of the single statement that makes it one round trip. Group the " +
+                    "entities by type and read each group.");
+            }
+
+            keys.Add(keyAccessor.GetKey(entity)
+                     ?? throw new InvalidOperationException(
+                         $"A {entityName} passed to ForMany has no key yet. Save it first — media rows record " +
+                         "the key, and one that is still unassigned belongs to nothing."));
+        }
+
+        // No entities, so no instance to read a name off. T's own resolution is the honest fallback
+        // — it respects [MediaEntity] where the raw type name would not — and an accessor over
+        // nothing still answers, with empty results and no store call, which keeps a caller from
+        // special-casing an empty page.
+        return ForKeys(name ?? MediaEntityNames.For(typeof(T)), DistinctKeys(keys));
+    }
+
+    private MediaBulkAccessor ForKeys(string entityName, IReadOnlyList<string> entityIds) =>
+        new(this, store, entityName, entityIds);
+
+    /// <summary>
+    /// The keys with repeats dropped, <b>in the order given</b> — which is the order a caller's own
+    /// page is in, and the key order every bulk result reports.
+    /// </summary>
+    private static List<string> DistinctKeys(IEnumerable<string> keys)
+    {
+        var seen  = new HashSet<string>(StringComparer.Ordinal);
+        var order = new List<string>();
+
+        foreach (var key in keys)
+        {
+            if (seen.Add(key))
+                order.Add(key);
+        }
+
+        return order;
+    }
+
     /// <summary>Removes one file's bytes and then its row, honouring <c>SoftDelete</c>.</summary>
     internal async Task DeleteFileAsync(MediaFile file, CancellationToken ct)
     {
@@ -369,6 +459,37 @@ internal sealed partial class MediaManager(
         else
         {
             await store.DeleteAsync(file.Id, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Tells every registered <see cref="IMediaFilesDeletedHandler"/> what went, in registration
+    /// order, after the fact.
+    /// <para>
+    /// Each one's failure is logged and swallowed. The files and their bytes are already gone, so
+    /// there is nothing a thrown exception could undo — it would only report a completed delete as
+    /// a failure, invite a retry of something that cannot be repeated, and stop the handlers after
+    /// it from hearing about the delete at all. The handler's own records are then stale, which is
+    /// the smaller of the two problems and the one a log line is for.
+    /// </para>
+    /// </summary>
+    internal async Task NotifyDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct)
+    {
+        if (_deletedHandlers.Length == 0 || mediaFileIds.Count == 0)
+            return;
+
+        foreach (var handler in _deletedHandlers)
+        {
+            try
+            {
+                await handler.OnDeletedAsync(mediaFileIds, ct).ConfigureAwait(false);
+            }
+#pragma warning disable CA1031 // One handler's failure must not break the delete or the others.
+            catch (Exception ex)
+#pragma warning restore CA1031
+            {
+                LogDeletedHandlerFailed(ex, handler.GetType().Name, mediaFileIds.Count);
+            }
         }
     }
 
@@ -435,6 +556,11 @@ internal sealed partial class MediaManager(
         Message = "Could not remove orphaned media content at {Provider}:{Container}/{Path} (media {MediaId}). " +
                   "Nothing references it and it can be deleted.")]
     private partial void LogOrphanedContent(Exception exception, string provider, string container, string path, Guid? mediaId);
+
+    [LoggerMessage(EventId = 7004, Level = LogLevel.Error,
+        Message = "Media files-deleted handler {Handler} failed for {Count} deleted file(s). The files are gone; " +
+                  "whatever this handler keeps about them has not been cleaned up.")]
+    private partial void LogDeletedHandlerFailed(Exception exception, string handler, int count);
 
     [LoggerMessage(EventId = 7003, Level = LogLevel.Warning,
         Message = "Media {MediaId} names storage backend '{Provider}', which is not registered; its row is " +
@@ -690,7 +816,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         await store.RemoveAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
 
     /// <inheritdoc/>
-    public async Task<int> DeleteAllAsync(CancellationToken ct = default)
+    public async Task<IReadOnlyList<Guid>> DeleteAllAsync(CancellationToken ct = default)
     {
         var attached = await store.ListAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
 
@@ -699,7 +825,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         var fileIds = attached.Select(a => a.MediaFileId).Distinct().ToArray();
 
         if (fileIds.Length == 0)
-            return 0;
+            return [];
 
         // One question for the whole set. Asked before anything is removed, because the answer is
         // "does somebody OTHER than this owner hold it" and removing this owner's links first would
@@ -710,7 +836,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         // on sole-held files would be cascaded by the delete anyway.
         await store.RemoveAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
 
-        var deleted = 0;
+        var deleted = new List<Guid>(fileIds.Length);
 
         foreach (var fileId in fileIds)
         {
@@ -724,10 +850,30 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 continue;
 
             await manager.DeleteFileAsync(file, ct).ConfigureAwait(false);
-            deleted++;
+            deleted.Add(file.Id);
         }
 
+        // One notification for the batch rather than one per file, and only the files that actually
+        // went — the detached ones are still in use, and telling a handler about them would have it
+        // clearing records belonging to a live file.
+        await manager.NotifyDeletedAsync(deleted, ct).ConfigureAwait(false);
+
         return deleted;
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlySet<Guid>> WhichAreSharedAsync(
+        IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(mediaFileIds);
+
+        if (mediaFileIds.Count == 0)
+            return new HashSet<Guid>();
+
+        // Straight through to the store's own one-statement probe. Scoped to this owner by the
+        // accessor, exactly as DeleteAllAsync scopes it: the question is "does anyone else hold
+        // it", and "anyone else" is only meaningful relative to an entity.
+        return await store.FindSharedAsync(mediaFileIds, owner, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -828,4 +974,147 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
             "them. Page it instead: IMediaManager.ListAsync with OwnerEntityName, OwnerEntityId and Role set, and " +
             "Skip and Take of your own, which reports the total as well.");
     }
+}
+
+/// <summary>
+/// <see cref="IMediaBulkAccessor"/> over a known set of owners of one entity type. Each method is
+/// one store call and some grouping — the store does the join, so there is no second read here to
+/// pair links with files.
+/// <para>
+/// Read-only by design: see <see cref="IMediaBulkAccessor"/> for why the writes stay on
+/// <see cref="IMediaAccessor"/>.
+/// </para>
+/// </summary>
+internal sealed class MediaBulkAccessor(
+    MediaManager manager,
+    IMediaStore store,
+    string entityName,
+    IReadOnlyList<string> entityIds) : IMediaBulkAccessor
+{
+    /// <inheritdoc/>
+    public string EntityName => entityName;
+
+    /// <inheritdoc/>
+    public IReadOnlyList<string> EntityIds => entityIds;
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyDictionary<string, IReadOnlyList<MediaAttachedFile>>> ListWithRolesAsync(
+        CancellationToken ct = default)
+    {
+        // Seeded with every id asked about, so an owner with no images is present with an empty
+        // list rather than absent. The alternative makes every caller write GetValueOrDefault, and
+        // the one that forgets gets a KeyNotFoundException on the first product without a photo.
+        var byOwner = entityIds.ToDictionary(id => id, _ => new List<MediaAttachedFile>(), StringComparer.Ordinal);
+
+        foreach (var row in await ReadAsync(role: null, ct).ConfigureAwait(false))
+        {
+            // Ordered by the store: owner, then role, then position. Appending in the order read
+            // is what makes this agree with IMediaAccessor.ListWithRolesAsync.
+            byOwner[row.Attachment.OwnerEntityId].Add(
+                new MediaAttachedFile(MediaFileInfo.From(row.File), row.Attachment.Role, row.Attachment.SortOrder));
+        }
+
+        return byOwner.ToDictionary(
+            pair => pair.Key,
+            pair => (IReadOnlyList<MediaAttachedFile>)pair.Value,
+            StringComparer.Ordinal);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlyDictionary<string, MediaFileInfo?>> GetByRoleAsync(
+        string role, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(role);
+
+        var normalized = MediaRoles.Normalize(role);
+
+        // The same two refusals IMediaAccessor.GetByRoleAsync makes, and in the same order: the
+        // declaration first, because that one is a question about the entity rather than its data.
+        if (Declared(normalized) is { Multiple: true })
+        {
+            throw new InvalidMediaException(
+                $"'{normalized}' is multi-valued on {entityName}, so asking for the one file holding it has no " +
+                "answer. List the role instead — ListWithRolesAsync here, ListByRoleAsync for a single entity.");
+        }
+
+        var found = new Dictionary<string, MediaFileInfo?>(StringComparer.Ordinal);
+
+        foreach (var id in entityIds)
+            found[id] = null;
+
+        foreach (var row in await ReadAsync(normalized, ct).ConfigureAwait(false))
+        {
+            var owner = row.Attachment.OwnerEntityId;
+
+            if (found[owner] is not null)
+            {
+                // Refused rather than answered with the first, exactly as the single-owner read is.
+                // Handing back one of two is how a product quietly loses the hero image somebody
+                // set, and the caller has no way to notice.
+                throw new InvalidMediaException(
+                    $"Several files hold the '{normalized}' role on {entityName} {owner}, so it is not a " +
+                    "single-valued role. Read it with ListWithRolesAsync, and attach with SetAsync rather than " +
+                    "AddAsync if only one was meant to hold it.");
+            }
+
+            found[owner] = MediaFileInfo.From(row.File);
+        }
+
+        return found;
+    }
+
+    /// <inheritdoc/>
+    public async Task<IReadOnlySet<string>> WhichHaveAttachmentsAsync(
+        string? role = null, CancellationToken ct = default)
+    {
+        var normalized = role is null ? null : MediaRoles.Normalize(role);
+
+        if (normalized is not null)
+            Declared(normalized);
+
+        var rows = await ReadAsync(normalized, ct).ConfigureAwait(false);
+
+        return rows.Select(row => row.Attachment.OwnerEntityId).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// The one store call, or none at all when there are no owners to ask about. Calling a store
+    /// with an empty id list would be a round trip whose answer is already known.
+    /// </summary>
+    private async Task<IReadOnlyList<MediaOwnerAttachment>> ReadAsync(string? role, CancellationToken ct) =>
+        entityIds.Count == 0
+            ? []
+            : await store.ListAttachmentsForOwnersAsync(entityName, entityIds, role, ct).ConfigureAwait(false);
+
+    /// <summary>
+    /// What this entity declared <paramref name="role"/> to be, or <c>null</c> when it declares no
+    /// roles and is therefore not checked. The bulk form of <c>MediaAccessor.Declared</c>, with the
+    /// same message — a misspelled role is a misspelling whichever way it is read.
+    /// </summary>
+    private MediaEntityRole? Declared(string role)
+    {
+        if (!manager.Roles.Declares(entityName))
+            return null;
+
+        return manager.Roles.Find(entityName, role)
+               ?? throw new InvalidMediaException(
+                   $"{entityName} has no media role '{role}'. It declares: " +
+                   $"{string.Join(", ", manager.Roles.RolesFor(entityName).Select(r => r.Multiple ? r.Name + " (many)" : r.Name))}.");
+    }
+}
+
+/// <summary>
+/// An <see cref="IMediaFilesDeletedHandler"/> over a delegate, behind
+/// <c>MediaBuilderExtensions.OnFilesDeleted(…)</c>. It holds the scope's
+/// <see cref="IServiceProvider"/> so an inline handler can resolve the unit of work the delete
+/// happened in, which is what makes a one-line cleanup possible without a class per table.
+/// </summary>
+internal sealed class DelegateMediaFilesDeletedHandler(
+    IServiceProvider services,
+    Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler)
+    : IMediaFilesDeletedHandler
+{
+    /// <inheritdoc/>
+    public Task OnDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default) =>
+        handler(services, mediaFileIds, ct);
 }

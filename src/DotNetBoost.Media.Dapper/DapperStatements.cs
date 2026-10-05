@@ -17,6 +17,15 @@ internal sealed class DapperStatements
         "Id, FileName, ContentType, Size, StorageProvider, StorageContainer, StoragePath, Checksum, " +
         "Category, Tags, Metadata, UploadedBy, CreatedAt, UpdatedAt, DeletedAt";
 
+    /// <summary>
+    /// What the attachment and file columns are aliased to in the one statement that selects both.
+    /// A reader finds a column by name, and the two tables share <c>Id</c> and <c>CreatedAt</c>.
+    /// </summary>
+    internal const string AttachmentPrefix = "A_";
+
+    /// <inheritdoc cref="AttachmentPrefix"/>
+    internal const string FilePrefix = "F_";
+
     /// <summary>Every attachment column, in a fixed order, for the same reason.</summary>
     internal const string AttachmentColumnList =
         "Id, MediaFileId, OwnerEntityName, OwnerEntityId, Role, SortOrder, CreatedAt";
@@ -73,6 +82,33 @@ internal sealed class DapperStatements
 
         DeleteAttachmentsOfFile = $"DELETE FROM {AttachmentTable} WHERE {C("MediaFileId")} = @MediaFileId";
 
+        // The join behind the bulk owner read, with every column aliased. Both tables have an Id
+        // and a CreatedAt, and a reader resolves a column by name — so without the prefixes the
+        // mapper would be reading whichever of the two the engine happened to hand back first.
+        var joinedAttachment = string.Join(
+            ", ",
+            AttachmentColumnList.Split(',', StringSplitOptions.TrimEntries)
+                .Select(c => $"a.{C(c)} AS {C(AttachmentPrefix + c)}"));
+
+        var joinedFile = string.Join(
+            ", ",
+            ColumnList.Split(',', StringSplitOptions.TrimEntries)
+                .Select(c => $"f.{C(c)} AS {C(FilePrefix + c)}"));
+
+        // Live files only, and an inner join, so a link to a tombstone returns nothing rather than
+        // a half-row. It cannot normally exist — a delete removes a file's links outright, soft or
+        // not — and this keeps the read honest if one ever does.
+        SelectAttachmentsForOwners =
+            $"SELECT {joinedAttachment}, {joinedFile} " +
+            $"FROM {AttachmentTable} a " +
+            $"INNER JOIN {Table} f ON f.{C("Id")} = a.{C("MediaFileId")} AND f.{C("DeletedAt")} IS NULL " +
+            $"WHERE a.{C("OwnerEntityName")} = @OwnerEntityName";
+
+        OwnersForBulkOrderBy =
+            $" ORDER BY a.{C("OwnerEntityId")} ASC, a.{C("Role")} ASC, a.{C("SortOrder")} ASC, a.{C("Id")} ASC";
+
+        BulkRolePredicate = $"a.{C("Role")} = @Role";
+
         // The owner predicate, reused by the listing, the bulk delete, the EXISTS behind an
         // owner-filtered file query and the subqueries that order one. Written once so a filter and
         // the count or the ordering beside it cannot disagree about which links they mean.
@@ -101,6 +137,9 @@ internal sealed class DapperStatements
     public string DeleteAttachmentsOfFile { get; }
     public string OwnerPredicate { get; }
     public string RolePredicate { get; }
+    public string SelectAttachmentsForOwners { get; }
+    public string OwnersForBulkOrderBy { get; }
+    public string BulkRolePredicate { get; }
 
     public static DapperStatements For(SqlDialect dialect, DapperOptions options) =>
         Cache.GetOrAdd(

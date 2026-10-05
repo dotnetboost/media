@@ -43,6 +43,7 @@ internal sealed class Harness
             MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
+            [],
             NullLogger<MediaManager>.Instance);
     }
 
@@ -52,9 +53,14 @@ internal sealed class Harness
     /// checked — which is what every test that is not about roles wants.
     /// </param>
     /// <param name="extraBackends">Further backends to register, for the multi-backend cases.</param>
+    /// <param name="deletedHandlers">
+    /// Files-deleted handlers, in the order the container would hand them over. Empty for every
+    /// test that is not about the notification.
+    /// </param>
     public static Harness Create(
         Action<MediaOptions>? configure = null,
         IMediaRoleRegistry? roles = null,
+        IEnumerable<IMediaFilesDeletedHandler>? deletedHandlers = null,
         params InMemoryStorageProvider[] extraBackends)
     {
         var options = new MediaOptions();
@@ -74,6 +80,7 @@ internal sealed class Harness
             roles ?? MediaRoleRegistry.Empty,
             options,
             clock,
+            deletedHandlers ?? [],
             NullLogger<MediaManager>.Instance);
 
         return new Harness(manager, store, storage, options, clock);
@@ -144,4 +151,38 @@ internal sealed class FailingMediaStore : IMediaStore
     public Task<IReadOnlySet<Guid>> FindSharedAsync(
         IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default) =>
         Task.FromResult<IReadOnlySet<Guid>>(new HashSet<Guid>());
+
+    public Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<MediaOwnerAttachment>>([]);
+}
+
+/// <summary>
+/// A files-deleted handler that records what it was told, for the tests about the notification.
+/// </summary>
+/// <param name="name">Names it in an assertion about the order several ran in.</param>
+/// <param name="fail">Throws instead of recording, for the "logged and swallowed" case.</param>
+internal sealed class RecordingDeletedHandler(string name = "recorder", bool fail = false) : IMediaFilesDeletedHandler
+{
+    private readonly List<IReadOnlyCollection<Guid>> _calls = [];
+
+    public string Name => name;
+
+    /// <summary>One entry per notification, holding the ids that notification carried.</summary>
+    public IReadOnlyList<IReadOnlyCollection<Guid>> Calls => _calls;
+
+    /// <summary>The ids of every notification run together, for the usual single-call assertion.</summary>
+    public IReadOnlyList<Guid> Ids => [.. _calls.SelectMany(ids => ids)];
+
+    public Task OnDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default)
+    {
+        if (fail)
+            throw new InvalidOperationException($"Handler '{name}' was told to fail.");
+
+        _calls.Add([.. mediaFileIds]);
+        return Task.CompletedTask;
+    }
 }

@@ -303,6 +303,58 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.Services.Replace(ServiceDescriptor.Scoped<IEntityKeyAccessor, TAccessor>());
             return builder;
         }
+
+        /// <summary>
+        /// Registers an <see cref="IMediaFilesDeletedHandler"/>, told after files are deleted so it
+        /// can clean up records this library knows nothing about — per-language alt text, a search
+        /// index, a CDN purge.
+        /// <code>
+        /// .OnFilesDeleted&lt;AltTextCleanup&gt;()
+        /// </code>
+        /// <para>
+        /// Scoped, like the engine itself: a handler almost always needs the same unit of work the
+        /// delete happened in. Call it more than once to register several — they are invoked in
+        /// registration order, and each one's exceptions are logged and swallowed, so a handler
+        /// that cannot reach its own table does not turn a completed delete into a failure.
+        /// </para>
+        /// </summary>
+        public static MediaBuilder OnFilesDeleted<THandler>(this MediaBuilder builder)
+            where THandler : class, IMediaFilesDeletedHandler
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+
+            // Add, not TryAdd: several handlers is the normal case, and TryAdd would silently keep
+            // only the first.
+            builder.Services.AddScoped<IMediaFilesDeletedHandler, THandler>();
+            return builder;
+        }
+
+        /// <summary>
+        /// Registers a files-deleted handler written inline, which for the usual case — one
+        /// <c>DELETE</c> over a table of the application's own — is the whole of it.
+        /// <code>
+        /// .OnFilesDeleted(async (services, ids, ct) =&gt;
+        /// {
+        ///     var db = services.GetRequiredService&lt;AppDbContext&gt;();
+        ///     await db.MediaAltText.Where(t =&gt; ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+        /// })
+        /// </code>
+        /// </summary>
+        /// <param name="builder">The builder.</param>
+        /// <param name="handler">
+        /// Called with the scope's own <see cref="IServiceProvider"/> — the delete's scope, so a
+        /// <c>DbContext</c> resolved from it is the one the delete used — and the ids that went.
+        /// </param>
+        public static MediaBuilder OnFilesDeleted(
+            this MediaBuilder builder,
+            Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler)
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+            ArgumentNullException.ThrowIfNull(handler);
+
+            builder.Services.AddScoped<IMediaFilesDeletedHandler>(sp => new DelegateMediaFilesDeletedHandler(sp, handler));
+            return builder;
+        }
     }
 
     /// <summary>Running the media configuration checks on demand.</summary>

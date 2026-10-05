@@ -168,3 +168,22 @@ public sealed record MediaAttachmentInfo
         };
     }
 }
+
+/// <summary>
+/// One attachment row together with the live file row it points at — the shape of a bulk owner
+/// read, where the join has to happen in the store rather than in the engine.
+/// <para>
+/// The single-owner reads pair links and files in application code, which costs two round trips
+/// and is fine for one entity. A listing page asking about fifty entities cannot afford the same
+/// shape per row, so <see cref="Interfaces.IMediaStore.ListAttachmentsForOwnersAsync"/> returns the
+/// pair and the engine does no second read at all.
+/// </para>
+/// <para>
+/// <see cref="File"/> is always live. An attachment of a deleted file does not exist — every
+/// delete removes its links outright, even under soft delete — so there is no third state here
+/// for a link to a tombstone.
+/// </para>
+/// </summary>
+/// <param name="Attachment">The link: who holds the file, in what role, at what position.</param>
+/// <param name="File">The file the link points at.</param>
+public sealed record MediaOwnerAttachment(MediaAttachment Attachment, MediaFile File);

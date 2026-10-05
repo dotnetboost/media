@@ -358,6 +358,44 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             .ConfigureAwait(false);
 
     /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        ArgumentNullException.ThrowIfNull(entityIds);
+
+        if (entityIds.Count == 0)
+            return [];
+
+        // One statement for every owner asked about, and the file joined into it. A query per
+        // owner is what this method exists to replace, and reading the files afterwards by id
+        // would put the second round trip back.
+        var rows = await _context.Set<MediaAttachment>()
+            .Where(a => a.OwnerEntityName == entityName && entityIds.Contains(a.OwnerEntityId))
+            .Where(a => role == null || a.Role == role)
+            .Join(
+                // Live files only, which is also what makes this an inner join rather than a left
+                // one: a link to a soft-deleted file has nothing to return. It cannot normally
+                // exist — deleting a file removes its links outright, tombstone or not — and this
+                // keeps the read honest if one ever does.
+                _context.Set<MediaFile>().Where(f => f.DeletedAt == null),
+                a => a.MediaFileId,
+                f => f.Id,
+                (a, f) => new { Attachment = a, File = f })
+            .OrderBy(x => x.Attachment.OwnerEntityId)
+            .ThenBy(x => x.Attachment.Role)
+            .ThenBy(x => x.Attachment.SortOrder)
+            .ThenBy(x => x.Attachment.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        return [.. rows.Select(x => new MediaOwnerAttachment(x.Attachment, x.File))];
+    }
+
+    /// <inheritdoc/>
     public async Task<IReadOnlySet<Guid>> FindSharedAsync(
         IReadOnlyCollection<Guid> mediaFileIds, MediaOwner excluding, CancellationToken ct = default)
     {

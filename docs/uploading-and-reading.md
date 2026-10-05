@@ -136,6 +136,16 @@ content is gone either way.
 Deleting twice is not an error, and neither is deleting a file whose bytes a backend says are
 already missing. Both make a retried delete complete rather than stick.
 
+**Every attachment of the file goes with it**, so a deleted file disappears from every entity that
+was using it — that is what deleting a file means, as against
+[detaching](attaching-to-entities.md#detaching-is-not-deleting) it from one entity. The attachment
+rows go even under soft delete.
+
+If your application keeps records of its own about a file, register `.OnFilesDeleted(...)` rather
+than clearing them beside each `DeleteAsync` call: the library's own `DELETE /api/media/{id}` runs
+no application code, so a direct API caller would otherwise strand them. See
+[attaching to entities](attaching-to-entities.md#cleaning-up-your-own-records-about-a-file).
+
 ## Listing
 
 ```csharp

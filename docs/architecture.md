@@ -74,7 +74,14 @@ costs no table, no column and no migration; it costs an attribute at most.
 
 The price is explicit, and the library does not pretend otherwise: **deleting an entity does not
 cascade to its files.** Call `media.For(entity).DeleteAllAsync()` when it goes — it deletes the
-files that entity alone was using and merely detaches the ones others still reference.
+files that entity alone was using, merely detaches the ones others still reference, and returns the
+ids it deleted so your own cleanup can act on exactly those.
+
+Nothing cascades **out** either: the library cannot know what records an application keeps about a
+file. `IMediaFilesDeletedHandler` is how that cleanup is registered once instead of remembered at
+every call site — including the REST endpoint's own `DELETE`, which runs no application code at
+all. Handlers are told after the fact, in registration order, and their failures are logged and
+swallowed: the bytes are already gone, so a throw could only misreport a completed delete.
 
 ## Why the bytes are written first
 
@@ -135,9 +142,39 @@ services.AddMedia()
 Removing a backend that rows still reference is the one thing that strands files, and the registry
 says so rather than failing obscurely.
 
+## Why one owner at a time is not enough
+
+`For(entity)` scopes every operation to one entity, which is what makes it impossible to reach
+another's files by accident. It also makes a listing page expensive: read through it per row and a
+page of fifty products costs fifty queries — a hundred, since pairing links with files is two reads.
+
+So the engine grew a second shape rather than relaxing the first. `ForMany(entities)` asks the same
+questions about many owners, and the store answers in **one statement with the file rows joined
+in** — the join moves into the store precisely so there is no second read to multiply. The writes
+stayed on `For(entity)`: a role and a position belong to one link, so there is nothing to batch.
+
+One question still cannot be asked that way. "The first 20 products that have an image" is not a
+subset of the first 20 products, so it has to be answered before paging, where the product rows and
+the attachment rows meet — the database. `DbContext.OwnersWithMedia<T>()` in the EF Core package is
+that one as an uncomposed `IQueryable<string>`, foldable into the application's own query.
+
+It rests on a guarantee the library makes elsewhere: deleting a file removes every attachment of it
+outright, **even under soft delete**. That is what lets the filter be a single statement over the
+attachment table instead of a join to the files, and it is why the guarantee is documented on
+`IMediaManager.DeleteAsync` rather than left as an implementation detail.
+
 ## Relationship to the other DotNetBoost libraries
 
 The shape is deliberately the same as DotNetBoost.Settings and DotNetBoost.MultiLingual: one
 service to inject, one builder chain, the same storage providers, the same `[Key]` / `Id` /
 `{Type}Id` key convention, the same problem-details terms. They are independent packages; an
 application can use one or all three.
+
+Entity addressing goes further than a shared convention. This library and DotNetBoost.MultiLingual
+resolve entity names and format keys **identically**, which is what lets an application join a
+media row to a translation row on `(EntityName, EntityId)`. Nothing enforced that agreement for a
+while — it rested on comments in two repositories — so both now publish
+`EntityKey.AddressingVersion`, and `DotNetBoost.Media.TestSupport.EntityAddressingConformance` is
+the suite that holds them to it. The rules are written out in the
+[README](https://github.com/dotnetboost/media/blob/main/README.md#dotnetboost-entity-addressing-v1)
+as DotNetBoost Entity Addressing v1.

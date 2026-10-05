@@ -145,15 +145,13 @@ public class Product
     public string Name { get; set; } = "";
 }
 
-public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options), IMediaDbContext
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
     public DbSet<Product> Products => Set<Product>();
-    public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
-    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        modelBuilder.ApplyMedia();     // adds the two tables
+        modelBuilder.ApplyMedia();     // adds the two tables — the whole opt-in
     }
 }
 ```
@@ -182,6 +180,7 @@ The response is the row. The bytes are under `uploads/2026/09/27/…png`. Fetch 
 | **Nothing is taken on trust** | Size is measured while writing. The declared content type is checked against the file's own leading bytes. Executables are refused by default. The storage path is derived from the file's id, never from its name. |
 | **Single-pass streaming** | A 2 GB upload costs 2 GB of network and no memory: the size, the SHA-256 and the size limit all fall out of the one read the backend does. |
 | **Nothing dangling** | Bytes are written first and the row second; if the row fails, the bytes are removed again. Deletes go the other way. |
+| **Listings cost one query** | `ForMany(products)` reads the media for a whole page of entities in a single round trip, instead of one — or two — per row. `db.OwnersWithMedia<Product>()` composes into your own query for the "has an image" filter that has to run *before* paging. |
 | **Direct downloads** | `GetUrlAsync` mints a time-limited SAS or pre-signed URL, so large files never pass through your application. |
 | **Honest failures** | 413 for an oversized upload, 415 for a rejected type, 404 for a missing file, 502 when the storage account is the problem — as RFC 7807 problem details. |
 
@@ -242,7 +241,20 @@ photo and another's third gallery shot — neither answer belongs to the file.
 There is **no foreign key** from an attachment row to your entity. That is deliberate: it is what
 lets two tables serve every entity in the application. The price is that deleting an entity does not
 cascade — call `media.For(entity).DeleteAllAsync()` when it goes, which deletes the files that
-entity alone was using and unlinks the rest.
+entity alone was using and unlinks the rest, and returns the ids it deleted.
+
+Nothing cascades *out* of this library either, for the same reason. If your application keeps
+records of its own about a file — per-language alt text, a search index entry, a CDN edge — register
+a handler rather than remembering the cleanup at each call site, because the REST endpoint's own
+`DELETE` is a call site no application code runs on:
+
+```csharp
+.OnFilesDeleted(async (services, ids, ct) =>
+{
+    var db = services.GetRequiredService<AppDbContext>();
+    await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+})
+```
 
 ---
 
@@ -346,6 +358,34 @@ Same shape as [DotNetBoost.Settings](https://github.com/dotnetboost/settings) an
 one builder chain to configure, the same storage providers, the same `[Key]` / `Id` /
 `{Type}Id` key convention, and problem details on the same terms. They are independent packages —
 use one, or all three together.
+
+### DotNetBoost Entity Addressing v1
+
+This library and DotNetBoost.MultiLingual address an entity **identically**, which is what lets an
+application join a media row to a translation row on the pair of columns. The rules:
+
+| | |
+|---|---|
+| **Entity name** | The `[MediaEntity("…")]` / `[MultiLingualEntity("…")]` attribute if the type carries one, otherwise the plain type name. Runtime-generated proxy types — EF Core's lazy-loading and change-tracking proxies — are unwrapped to the application's own type first, so a proxied instance addresses the same rows as a plain one. |
+| **Key format** | Invariant culture, always. Numbers through `IFormattable` with `CultureInfo.InvariantCulture`; `Guid` in `"D"` format (lowercase, hyphenated, no braces); `string` keys as they are. A key must not be empty or whitespace. |
+| **Name length** | 128 characters. |
+| **Key length** | 64 characters — an `int`, a `long` or a `Guid` in `"D"` format, with room for a short composite. |
+
+Every library that conforms publishes the version as a constant under the same name, so an
+application can assert the two agree and fail at startup rather than discover a mismatch as rows
+that quietly stopped joining:
+
+```csharp
+Assert.Equal(
+    DotNetBoost.Media.Core.Metadata.EntityKey.AddressingVersion,        // "1.0"
+    DotNetBoost.MultiLingual.Core.Metadata.EntityKey.AddressingVersion);
+```
+
+`DotNetBoost.Media.TestSupport` ships that assertion and the rest of the rules as
+`EntityAddressingConformance`, an abstract xUnit class to derive from — so the agreement is a suite
+you run rather than four paragraphs you take on trust. **The version is bumped for any change to
+name resolution, key formatting or either length limit**, including one that looks harmless from
+inside a single library.
 
 ## Contributing
 
