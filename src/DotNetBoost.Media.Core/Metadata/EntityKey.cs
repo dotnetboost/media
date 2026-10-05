@@ -35,9 +35,9 @@ public static class EntityKey
     /// rest of the rules, as a theory to run rather than to hand-write.
     /// </para>
     /// <para>
-    /// <b>Bump it for ANY change</b> to name resolution, key formatting or the length limits — a
-    /// change that is invisible in this library is exactly the kind that silently stops two
-    /// libraries addressing the same entity.
+    /// <b>Bump it for ANY change</b> to entity-name resolution, key discovery, key formatting,
+    /// unset-key detection, or either length limit — a change that is invisible in this library is
+    /// exactly the kind that silently stops two libraries addressing the same entity.
     /// </para>
     /// </summary>
     public const string AddressingVersion = "1.0";
@@ -76,4 +76,36 @@ public static class EntityKey
 
         return text;
     }
+
+    /// <summary>
+    /// True when <paramref name="value"/> is the CLR default for its key type — an entity whose
+    /// store-generated key has not been assigned yet, and so cannot be addressed.
+    /// </summary>
+    /// <remarks>
+    /// Only the key types listed below are recognised. A value of any OTHER type reads as SET,
+    /// even at its own default — a strongly-typed id struct, or <c>ObjectId.Empty</c> — because
+    /// Core cannot reference a provider's types to know better.
+    /// <para>
+    /// A provider whose keys use such a type must therefore return <c>null</c> from its
+    /// <see cref="Interfaces.IEntityKeyAccessor"/> for the unassigned value: the accessors are the
+    /// only callers of this method, so that is the one place the knowledge exists. Left to this
+    /// method, an unsaved entity looks addressable and its files are attached under the default
+    /// value's string form.
+    /// </para>
+    /// <para>
+    /// The same rule, over the same types, as DotNetBoost Entity Addressing v1 requires — see
+    /// <see cref="AddressingVersion"/>.
+    /// </para>
+    /// </remarks>
+    public static bool IsUnset(object? value) => value switch
+    {
+        null     => true,
+        int i    => i == 0,
+        long l   => l == 0,
+        short s  => s == 0,
+        byte b   => b == 0,
+        Guid g   => g == Guid.Empty,
+        string s => s.Length == 0,
+        _        => false
+    };
 }

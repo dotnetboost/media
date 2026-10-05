@@ -65,8 +65,8 @@ public readonly record struct MediaOwner(string EntityName, string EntityId);
 
 /// <summary>
 /// A change to a stored file's metadata. Every property is optional, and the ones left unset are
-/// left alone — this is a patch, not the full replacement <c>LanguageUpdate</c> is in
-/// DotNetBoost.MultiLingual, because the fields here are independent of one another.
+/// left alone — a patch rather than a full replacement, because the fields here are independent of
+/// one another.
 /// <para>
 /// The bytes, their size, their checksum and their location are not here: they are established
 /// by the upload and are not editable. Replacing content means a new upload. Nor are attachments —

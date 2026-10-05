@@ -70,8 +70,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `.OnFilesDeleted<THandler>()` registers a class instead. Raised by `DeleteAsync` with the one
   file it deleted, and by `DeleteAllAsync` with the batch it deleted — **not** the files it merely
   detached, which are still in use and whose records must survive. Handlers run in registration
-  order and their exceptions are logged and swallowed, the same contract
-  `ISettingChangedHandler<T>` has in DotNetBoost.Settings: the bytes are already gone, so a throw
+  order and their exceptions are logged and swallowed: the bytes are already gone, so a throw
   could only report a completed delete as a failure, invite a retry of something that cannot be
   repeated, and stop the handlers after it from hearing about the delete at all.
 
@@ -81,6 +80,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   application could not ask. For a confirmation dialog that has to say "2 of these 5 images are
   used by other products and will stay".
 
+- **`EntityKey.IsUnset(value)`** — the spec's unset-key test, now public and shared instead of a
+  private copy inside `ConventionEntityKeyAccessor`. `null`, `0` at any integer width,
+  `Guid.Empty` and `""` mean "not assigned yet" and address nothing; anything else, including a
+  custom id struct at its own default, reads as assigned, so a provider using one must return
+  `null` from its own `IEntityKeyAccessor`.
+- **Two more rules in the published spec**: *Key discovery* and *Unset keys*. Both were already
+  implemented and neither was written down, which is how the two drifted below. The README's
+  Entity Addressing table now carries the same six rows as DotNetBoost.MultiLingual's, in the same
+  order, and `AddressingVersion`'s "bump it for ANY change" list names all five rule areas rather
+  than three.
+- `EntityAddressingConformance` gained `IsKeyUnset` and `DiscoverKey`, so those two rules are run
+  rather than asserted in prose. Nine new facts cover them, including the composite-key refusal and
+  the write-only `Id` that must be skipped.
 - **`EntityKey.AddressingVersion`** — the entity-addressing spec version this implementation
   conforms to, published as `"1.0"`. This library and DotNetBoost.MultiLingual resolve entity names
   and format keys identically, which is what lets an application join a media row to a translation
@@ -140,6 +152,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   `MediaPickerModal` gains a `fixedRole` prop for this. Without it the picker is unchanged, and the
   Media page is untouched.
+
+### Fixed
+- **Two ways this library addressed an entity differently from DotNetBoost.MultiLingual while both
+  published Entity Addressing v1.** Neither spec table covered the rule, so neither conformance
+  suite caught it.
+  - A `byte` key of `0` was treated as **assigned** and attached files under the key `"0"`;
+    MultiLingual treated it as unassigned and attached nothing. `EntityKey.IsUnset` now covers
+    `byte`, matching the published rule.
+  - A type with two `[Key]` properties was **silently resolved** to whichever one
+    `Type.GetProperties()` returned first — an order the runtime does not guarantee, so the same
+    entity could key differently between builds. It is now refused with a `NotSupportedException`
+    naming both properties, as MultiLingual already did.
+- Convention key discovery now considers only readable, non-indexer properties. A write-only
+  property named `Id` was eligible on its name alone and then threw when its value was read.
 
 ## [1.0.0-preview.1] - 2026-09-28
 

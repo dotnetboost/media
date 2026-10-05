@@ -366,10 +366,12 @@ application join a media row to a translation row on the pair of columns. The ru
 
 | | |
 |---|---|
-| **Entity name** | The `[MediaEntity("…")]` / `[MultiLingualEntity("…")]` attribute if the type carries one, otherwise the plain type name. Runtime-generated proxy types — EF Core's lazy-loading and change-tracking proxies — are unwrapped to the application's own type first, so a proxied instance addresses the same rows as a plain one. |
-| **Key format** | Invariant culture, always. Numbers through `IFormattable` with `CultureInfo.InvariantCulture`; `Guid` in `"D"` format (lowercase, hyphenated, no braces); `string` keys as they are. A key must not be empty or whitespace. |
-| **Name length** | 128 characters. |
-| **Key length** | 64 characters — an `int`, a `long` or a `Guid` in `"D"` format, with room for a short composite. |
+| **Entity name** | The name fixed by `[MediaEntity("…")]` — `[MultiLingualEntity("…")]` on the other side — if the type carries one; otherwise the CLR type's `Name`, not its full name, so a namespace move changes nothing. Runtime-generated types — EF Core's lazy-loading and change-tracking proxies, any dynamic-assembly subclass — are unwrapped to the application's own type first, so a proxied instance addresses the same rows as a plain one. |
+| **Name length** | At most 128 characters. Stored and compared as written: resolution yields one casing for a given type, so case only matters for a name passed by hand, where whether `"mediafile"` reaches `"MediaFile"`'s rows is the database collation's business. Pass the resolved name. |
+| **Key discovery** | The single property marked `[Key]`, else one named `Id`, else one named `{TypeName}Id` — public, instance, readable, and not an indexer. More than one `[Key]` is a composite key and is **refused**: one column holds one value, and reflection does not order properties, so picking one would key the entity on whichever this runtime happened to return. A provider with a model to read replaces this — both EF Core providers do — and is authoritative where the two disagree. |
+| **Key format** | Invariant culture, always. `Guid` → `"D"` (lower case, hyphenated, no braces). `int`, `long`, `short`, `byte` → their invariant decimal form. `string` → itself, case preserved. Any other `IFormattable` → invariant `ToString`. A key must not be empty or whitespace. |
+| **Key length** | At most 64 characters — a `Guid` in `"D"` form is 36, and every numeric key fits with room to spare. A longer key is refused where it is written, not silently truncated by the database. |
+| **Unset keys** | `null`, `0` (of any integer width), `Guid.Empty` and `""` mean "not assigned yet" and address nothing. A provider whose keys are a custom struct must return `null` from its `IEntityKeyAccessor` for its own unassigned value — Core cannot recognise a type it may not reference. |
 
 Every library that conforms publishes the version as a constant under the same name, so an
 application can assert the two agree and fail at startup rather than discover a mismatch as rows

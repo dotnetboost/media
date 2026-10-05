@@ -279,10 +279,16 @@ Use the attribute when you might rename the class, or when two unrelated types w
 share a name. **The stored name is what attaches a file to an entity**, so changing it later
 strands every file already attached under the old one. Pick it once.
 
-The key is found by convention — a property marked `[Key]`, then `Id`, then `{TypeName}Id` — the
-same order DotNetBoost.MultiLingual uses, so an application running both libraries keys its
-entities one way. With the EF Core store the model is read instead, so a key configured fluently
-or as a shadow property is found too.
+The key is found by convention — a property marked `[Key]`, then `Id`, then `{TypeName}Id`,
+considering public instance properties that are readable and not indexers. Two `[Key]` properties
+are a composite key and are refused: one column holds one value, and reflection does not order
+properties, so picking one would key the entity on whichever this runtime happened to return. With
+the EF Core store the model is read instead, so a key configured fluently or as a shadow property
+is found too, and the model wins where the two disagree.
+
+That order is a rule of [DotNetBoost Entity Addressing v1](../README.md#dotnetboost-entity-addressing-v1),
+not a coincidence, so an application running any library implementing the same version keys its
+entities one way — and `EntityKey.AddressingVersion` plus the conformance suite are what hold it.
 
 Keys are formatted invariantly: `int`, `long`, `Guid` and `string` all fit the one column, and a
 key formatted under `ar-SA` reads back the same under `en-US`.
@@ -425,8 +431,6 @@ resolved from it is the one the delete used.
 | **What** | `DeleteAsync` passes the one file it deleted. `DeleteAllAsync` passes the batch it deleted — **not** the files it merely detached. A delete that found nothing notifies nobody. |
 | **Order** | Registration order. Register several: one for alt text, one for the search index. |
 | **Failures** | Logged and swallowed. The bytes are already gone, so throwing would report a completed delete as a failure and invite a retry of something that cannot be repeated — and would stop the handlers after it from hearing about the delete at all. |
-
-Same contract as `ISettingChangedHandler<T>` in DotNetBoost.Settings.
 
 There is a window between finding a file unshared and removing its bytes in which another request
 could attach it, leaving that new link pointing at bytes that are gone. Closing it needs a lock this

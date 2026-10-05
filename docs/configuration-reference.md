@@ -63,8 +63,7 @@ remembering the cleanup at every call site. The one that gets missed otherwise i
 Raised after the files are gone, with the ids that actually went — `DeleteAllAsync` passes the
 batch it deleted and **not** the files it merely detached. Handlers run in registration order, and
 each one's exceptions are logged and swallowed: the bytes are already gone, so a throw would report
-a completed delete as a failure and stop the handlers after it. Same contract as
-`ISettingChangedHandler<T>` in DotNetBoost.Settings.
+a completed delete as a failure and stop the handlers after it.
 
 ## Metadata stores — one of
 
