@@ -46,6 +46,7 @@ public sealed class EfCoreTests : IAsyncLifetime
             MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
+            [],
             NullLogger<MediaManager>.Instance);
     }
 
@@ -85,7 +86,7 @@ public sealed class EfCoreTests : IAsyncLifetime
         // Rolling back takes the media row with it — which is the point of the row living in the
         // application's own context rather than a store of its own.
         _context.ChangeTracker.Clear();
-        Assert.Null(await _context.MediaFiles.FindAsync(file.Id));
+        Assert.Null(await _context.Set<MediaFile>().FindAsync(file.Id));
     }
 
     [Fact]
@@ -162,8 +163,127 @@ public sealed class EfCoreTests : IAsyncLifetime
         Assert.Single(orphans.Items);
 
         var deleted = await _media.For(product).DeleteAllAsync();
-        Assert.Equal(1, deleted);
+        Assert.Single(deleted);
         Assert.Empty(_storage.Paths);
+    }
+
+    /// <summary>
+    /// The one media question a known set of ids cannot answer: which owners have media at all,
+    /// which has to be asked before paging rather than after.
+    /// </summary>
+    // p.Id.ToString() inside these queries is deliberate, and the parameterless form is the only
+    // one EF Core can translate: it becomes a cast in SQL, done by the engine, so there is no
+    // client culture involved for CA1305 to be right about. Calling the invariant overload instead
+    // would fail to translate and silently evaluate the whole products table in memory.
+#pragma warning disable CA1305
+    [Fact]
+    public async Task OwnersWithMedia_composes_into_a_query_over_the_applications_own_table()
+    {
+        var withImage    = new Product { Name = "Lamp" };
+        var withoutImage = new Product { Name = "Chair" };
+
+        _context.Products.AddRange(withImage, withoutImage);
+        await _context.SaveChangesAsync();
+
+        await _media.For(withImage).UploadAsync(TestMedia.Upload(TestMedia.Png(), "lamp.png"));
+
+        var owners = _context.OwnersWithMedia<Product>();
+
+        // Composed into the products query and run as one statement — no ToList in between, which
+        // is the whole point: filtering before paging cannot be done on a materialised list.
+        var names = await _context.Products
+            .Where(p => owners.Contains(p.Id.ToString()))
+            .OrderBy(p => p.Name)
+            .Select(p => p.Name)
+            .ToListAsync();
+
+        Assert.Equal(["Lamp"], names);
+
+        // And negated, which is the other half of the screen it exists for.
+        var missing = await _context.Products
+            .Where(p => !owners.Contains(p.Id.ToString()))
+            .Select(p => p.Name)
+            .ToListAsync();
+
+        Assert.Equal(["Chair"], missing);
+    }
+
+    [Fact]
+    public async Task OwnersWithMedia_can_narrow_to_one_role()
+    {
+        var hero    = new Product { Name = "Lamp" };
+        var gallery = new Product { Name = "Chair" };
+
+        _context.Products.AddRange(hero, gallery);
+        await _context.SaveChangesAsync();
+
+        var one = await _media.UploadAsync(TestMedia.Upload(TestMedia.Png(), "a.png"));
+        var two = await _media.UploadAsync(TestMedia.Upload(TestMedia.Png(32), "b.png"));
+
+        await _media.For(hero).SetAsync("primary", one.Id);
+        await _media.For(gallery).AddAsync(two.Id, "gallery");
+
+        var primaries = await _context.Products
+            .Where(p => _context.OwnersWithMedia<Product>("primary").Contains(p.Id.ToString()))
+            .Select(p => p.Name)
+            .ToListAsync();
+
+        Assert.Equal(["Lamp"], primaries);
+    }
+
+#pragma warning restore CA1305
+
+    [Fact]
+    public async Task OwnersWithMedia_normalises_the_role_it_is_given()
+    {
+        var product = new Product { Name = "Lamp" };
+        _context.Products.Add(product);
+        await _context.SaveChangesAsync();
+
+        var file = await _media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
+        await _media.For(product).SetAsync("primary", file.Id);
+
+        // Roles are lower-cased on write, so a filter that was not would silently match nothing —
+        // and nothing is indistinguishable from "no product has one".
+        Assert.NotEmpty(await _context.OwnersWithMedia<Product>("Primary").ToListAsync());
+    }
+
+    [Fact]
+    public async Task OwnersWithMedia_names_an_owner_once_however_many_files_it_holds()
+    {
+        var product = new Product { Name = "Lamp" };
+        _context.Products.Add(product);
+        await _context.SaveChangesAsync();
+
+        await _media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png(), "a.png"));
+        await _media.For(product).UploadAsync(TestMedia.Upload(TestMedia.Png(32), "b.png"));
+
+        // Distinct, so composing it with Contains does not multiply the outer query's rows.
+        Assert.Single(await _context.OwnersWithMedia<Product>().ToListAsync());
+    }
+
+    /// <summary>
+    /// The bulk read through the real store and the real engine, where the one query and the join
+    /// inside it are the provider's to get right.
+    /// </summary>
+    [Fact]
+    public async Task ForMany_reads_a_page_of_products_in_one_query()
+    {
+        var products = Enumerable.Range(1, 20).Select(i => new Product { Name = "P" + i }).ToArray();
+
+        _context.Products.AddRange(products);
+        await _context.SaveChangesAsync();
+
+        foreach (var product in products)
+        {
+            await _media.For(product)
+                .UploadAsync(TestMedia.Upload(TestMedia.Png(), product.Name + ".png"));
+        }
+
+        var heroes = await _media.ForMany(products).GetByRoleAsync(MediaRoles.Default);
+
+        Assert.Equal(20, heroes.Count);
+        Assert.All(products, p => Assert.NotNull(heroes[p.Id.ToString(System.Globalization.CultureInfo.InvariantCulture)]));
     }
 
     private sealed class PlainThing
@@ -198,6 +318,7 @@ public sealed class FileSystemEngineTests : IDisposable
             MediaRoleRegistry.Empty,
             new MediaOptions(),
             clock,
+            [],
             NullLogger<MediaManager>.Instance);
 
         var content = TestMedia.Png(1024);

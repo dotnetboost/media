@@ -623,6 +623,64 @@ public sealed class DapperMediaStore(
         return shared;
     }
 
+    /// <inheritdoc/>
+    public async Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        ArgumentNullException.ThrowIfNull(entityIds);
+
+        if (entityIds.Count == 0)
+            return [];
+
+        var sql = Sql;
+
+        string C(string column) => DapperStatements.Quote(sql.Dialect, column);
+
+        var parameters = new DynamicParameters();
+        parameters.Add("OwnerEntityName", entityName);
+
+        if (role is not null)
+            parameters.Add("Role", role);
+
+        // Each id its own parameter, for the reason FindSharedAsync spells out: handed a
+        // collection, Dapper asks the provider about arrays and Npgsql says yes, which PostgreSQL
+        // accepts only after "= ANY(...)" and rejects as a syntax error after IN.
+        var ids   = entityIds.Distinct(StringComparer.Ordinal).ToArray();
+        var names = new string[ids.Length];
+
+        for (var i = 0; i < ids.Length; i++)
+        {
+            names[i] = "@owner" + i.ToString(CultureInfo.InvariantCulture);
+            parameters.Add("owner" + i.ToString(CultureInfo.InvariantCulture), ids[i]);
+        }
+
+        // One statement, however many owners were asked about. Batching the ids the way the
+        // sole-holder probe does would defeat the point of the method on a page of fifty, and a
+        // page is what this is for — a listing asking about more owners than a statement will take
+        // has a paging problem rather than a media one.
+        var statement = sql.SelectAttachmentsForOwners
+                        + $" AND a.{C("OwnerEntityId")} IN ({string.Join(", ", names)})"
+                        + (role is null ? string.Empty : $" AND {sql.BulkRolePredicate}")
+                        + sql.OwnersForBulkOrderBy;
+
+        return await UnitOfWork.RunAsync(
+            _connection,
+            async () =>
+            {
+                await using var reader = await _connection.ExecuteReaderAsync(
+                    new CommandDefinition(statement, parameters, transaction, cancellationToken: ct)).ConfigureAwait(false) as DbDataReader
+                    ?? throw new InvalidOperationException("The connection did not return a DbDataReader.");
+
+                return (IReadOnlyList<MediaOwnerAttachment>)
+                    await MediaOwnerAttachmentMapper.ReadAllAsync(reader, ct).ConfigureAwait(false);
+            },
+            ct).ConfigureAwait(false);
+    }
+
     private Task<IReadOnlyList<MediaAttachment>> QueryAttachmentsAsync(
         string sql, object parameters, CancellationToken ct) =>
         UnitOfWork.RunAsync(

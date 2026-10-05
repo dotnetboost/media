@@ -7,6 +7,7 @@ using SampleApp.Data;
 using SampleApp.Domain;
 using SampleApp.Dtos;
 using Scalar.AspNetCore;
+using System.Globalization;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -91,11 +92,14 @@ app.MapGet("/api/products", async (AppDbContext db, IMediaManager media, Cancell
 {
     var products = await db.Products.AsNoTracking().OrderBy(p => p.Id).ToListAsync(ct);
 
-    var responses = new List<ProductResponse>(products.Count);
-    foreach (var product in products)
-        responses.Add(await ToResponseAsync(product, media, ct));
+    // ForMany, not For in a loop. Through For this listing would issue two queries per product —
+    // its links, then the files they point at — so a page of fifty products costs a hundred reads
+    // to draw fifty thumbnails. ForMany is one, whatever the page holds.
+    var images = await media.ForMany(products).ListWithRolesAsync(ct);
 
-    return responses;
+    // Every product asked about is in the dictionary, so one with no images reads as an empty list
+    // rather than a missing key.
+    return products.Select(product => ToResponse(product, images[Key(product)])).ToList();
 });
 
 app.MapGet("/api/products/{id:int}", async (int id, AppDbContext db, IMediaManager media, CancellationToken ct) =>
@@ -275,10 +279,16 @@ static async Task<ProductResponse> ToResponseAsync(Product product, IMediaManage
 {
     // ListWithRolesAsync rather than ListAsync: the client needs to know which image is the primary
     // one and what order the gallery is in, and that lives on the link, not on the file. Two reads
-    // for the whole product, rather than one per role.
+    // for the whole product, rather than one per role — which is fine for ONE product. The listing
+    // above reads a page of them through ForMany instead.
     var attached = await media.For(product).ListWithRolesAsync(ct);
 
-    return new ProductResponse(
+    return ToResponse(product, attached);
+}
+
+/// <summary>Shapes one product and the files already read for it. No I/O — the reads happened above.</summary>
+static ProductResponse ToResponse(Product product, IReadOnlyList<MediaAttachedFile> attached) =>
+    new(
         product.Id,
         product.Sku,
         product.Name,
@@ -291,4 +301,10 @@ static async Task<ProductResponse> ToResponseAsync(Product product, IMediaManage
             $"/api/media/{a.File.Id}/content",
             a.Role,
             a.SortOrder))]);
-}
+
+/// <summary>
+/// A product's key as the attachment rows hold it, which is how a bulk read's results are keyed.
+/// Invariant, because that is what <c>EntityKey</c> writes and a key formatted any other way would
+/// find nothing.
+/// </summary>
+static string Key(Product product) => product.Id.ToString(CultureInfo.InvariantCulture);

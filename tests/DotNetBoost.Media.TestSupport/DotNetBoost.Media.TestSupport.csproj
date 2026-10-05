@@ -10,5 +10,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/DotNetBoost.Media.Core/DotNetBoost.Media.Core.csproj" />
+    <!-- xunit, but no runner and no test SDK: this project ships the entity-addressing conformance
+         suite as an abstract class for a consumer's own test project to derive from, so it needs
+         the attributes and assertions without being collected as a test project itself. -->
+    <PackageReference Include="xunit" />
   </ItemGroup>
 </Project>

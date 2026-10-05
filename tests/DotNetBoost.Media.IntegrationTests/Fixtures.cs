@@ -149,13 +149,12 @@ public sealed class MongoDbCollection : ICollectionFixture<MongoDbFixture>
     public const string Name = "MongoDB";
 }
 
-/// <summary>The context the EF Core tests map their media table into.</summary>
-public sealed class IntegrationContext(DbContextOptions<IntegrationContext> options) : DbContext(options), IMediaDbContext
+/// <summary>
+/// The context the EF Core tests map their media tables into. <c>ApplyMedia()</c> is the whole of
+/// it: there is no interface to implement and no media <c>DbSet</c> to declare.
+/// </summary>
+public sealed class IntegrationContext(DbContextOptions<IntegrationContext> options) : DbContext(options)
 {
-    public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
-
-    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
-
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);

@@ -14,12 +14,8 @@ services.AddMedia()
 ```
 
 ```csharp
-public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options), IMediaDbContext
+public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
-    public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
-
-    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
-
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(AppDbContext).Assembly);
@@ -28,8 +24,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 }
 ```
 
-`IMediaDbContext` requires both sets: `MediaFiles` for the uploads, `MediaAttachments` for the links
-to your entities. Two tables in total, whatever you attach media to.
+`ApplyMedia()` is the whole opt-in. **There is no interface to implement and no `DbSet` to
+declare**: the store reaches both tables through `context.Set<T>()`, which works on any context
+whose model has them, and application code goes through `IMediaManager` rather than the tables.
+Two tables in total, whatever you attach media to.
+
+> `IMediaDbContext` is `[Obsolete]` and will be removed in the next major version. It never did
+> anything — `UseEntityFrameworkCore<TContext>` constrains on `DbContext` alone and the store never
+> read its properties — so delete it from your context along with the two `DbSet`s.
 
 Then generate a migration as you would for any other table:
 
@@ -185,8 +187,26 @@ services.AddMedia()
 Stores are deliberately dumb: validation, checksums, deduplication, soft delete and the ordering of
 the two writes all live in the engine. A store persists rows. Run `StoreContractTests` against it.
 
-One method is worth reading twice. `UpdateAttachmentsAsync` is handed every link a reorder moved,
-and is meant to write them **in one operation**: looping over `UpdateAttachmentAsync` will pass the
-contract tests, but it costs a round trip per image and — because each call commits — it lets a
-failure halfway through leave a gallery in an order nobody chose. The shipped stores use one
-batched `SaveChanges`, one `BulkWrite`, and one statement on the caller's own connection.
+Two methods are worth reading twice, and for the same reason: both have an implementation that
+passes the contract tests and is still wrong.
+
+`UpdateAttachmentsAsync` is handed every link a reorder moved, and is meant to write them **in one
+operation**. Looping over `UpdateAttachmentAsync` passes the tests, but it costs a round trip per
+image and — because each call commits — it lets a failure halfway through leave a gallery in an
+order nobody chose. The shipped stores use one batched `SaveChanges`, one `BulkWrite`, and one
+statement on the caller's own connection.
+
+`ListAttachmentsForOwnersAsync` is handed many owners at once and must answer in **one statement**,
+with the file rows joined in. Looping `ListAttachmentsAsync` over the ids also passes, and also
+defeats the entire point: that method exists only because reading a listing page one owner at a
+time is what `IMediaBulkAccessor` was added to stop. The shipped stores use a join (EF Core and
+Dapper) and a `$lookup` aggregation (MongoDB). Two details the contract pins down:
+
+- The join is **inner** and filtered to live files, so a link whose file is soft-deleted returns
+  nothing rather than half a row. It should not arise — a delete removes a file's links outright,
+  tombstone or not — but a store must not produce it if it does.
+- An owner with nothing attached is simply **absent**. Turning that into an empty entry needs the
+  list of ids asked about, which is the engine's; the store answers about rows.
+
+`StoreContractTests` covers both, including a fifty-owner read, so a store that expands ids into a
+statement is checked at the size a real page actually is.

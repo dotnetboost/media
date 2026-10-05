@@ -40,6 +40,7 @@ public sealed class InMemoryMediaStore : IMediaStore
     public int Counts => Volatile.Read(ref _counts);
 
     private int _attachmentWrites;
+    private int _bulkOwnerReads;
 
     /// <summary>
     /// How many attachment writes have been issued, counting a batch as the one command it is.
@@ -47,12 +48,20 @@ public sealed class InMemoryMediaStore : IMediaStore
     /// </summary>
     public int AttachmentWrites => Volatile.Read(ref _attachmentWrites);
 
+    /// <summary>
+    /// How many bulk owner reads have been issued. The whole promise of <c>ForMany</c> is that
+    /// this stays at one however many owners were asked about, so a test can hold it to that
+    /// rather than take the shape of the code as evidence.
+    /// </summary>
+    public int BulkOwnerReads => Volatile.Read(ref _bulkOwnerReads);
+
     /// <summary>Zeroes the counters, so a test can measure one call rather than its setup.</summary>
     public void ResetCounters()
     {
         Interlocked.Exchange(ref _queries, 0);
         Interlocked.Exchange(ref _counts, 0);
         Interlocked.Exchange(ref _attachmentWrites, 0);
+        Interlocked.Exchange(ref _bulkOwnerReads, 0);
     }
 
     /// <inheritdoc/>
@@ -276,6 +285,40 @@ public sealed class InMemoryMediaStore : IMediaStore
                 .Where(a => Owned(a, owner) && RoleMatches(a, role))
                 .OrderBy(a => a.Role, StringComparer.Ordinal).ThenBy(a => a.SortOrder).ThenBy(a => a.Id)
                 .Select(Clone)]);
+
+    /// <inheritdoc/>
+    public Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(entityName);
+        ArgumentNullException.ThrowIfNull(entityIds);
+
+        Interlocked.Increment(ref _bulkOwnerReads);
+
+        if (entityIds.Count == 0)
+            return Task.FromResult<IReadOnlyList<MediaOwnerAttachment>>([]);
+
+        var wanted = entityIds.ToHashSet(StringComparer.Ordinal);
+
+        return Task.FromResult<IReadOnlyList<MediaOwnerAttachment>>(
+            [.. _attachments.Values
+                .Where(a => string.Equals(a.OwnerEntityName, entityName, StringComparison.Ordinal)
+                            && wanted.Contains(a.OwnerEntityId)
+                            && RoleMatches(a, role))
+                .OrderBy(a => a.OwnerEntityId, StringComparer.Ordinal)
+                .ThenBy(a => a.Role, StringComparer.Ordinal)
+                .ThenBy(a => a.SortOrder)
+                .ThenBy(a => a.Id)
+                // The join, and the live-file filter with it: a real store does both in the one
+                // statement, and a link whose file is gone drops out rather than returning half a
+                // row. Selected through a lookup so a missing file is skipped rather than throwing.
+                .Select(a => (Link: a, File: _files.TryGetValue(a.MediaFileId, out var f) ? f : null))
+                .Where(pair => pair.File is { DeletedAt: null })
+                .Select(pair => new MediaOwnerAttachment(Clone(pair.Link), Clone(pair.File!)))]);
+    }
 
     /// <inheritdoc/>
     public Task<IReadOnlySet<Guid>> FindSharedAsync(

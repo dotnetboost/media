@@ -8,10 +8,27 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 namespace DotNetBoost.Media.EntityFrameworkCore;
 
 /// <summary>
-/// Implement this on your <see cref="DbContext"/> to let the EF Core store use it, and call
+/// <b>Nothing requires this, and nothing reads it.</b> It will be removed in the next major
+/// version; delete it from your <see cref="DbContext"/> and the two <see cref="DbSet{TEntity}"/>
+/// properties with it.
+/// <para>
+/// It once looked like the way a context opted in. It never was:
+/// <c>UseEntityFrameworkCore&lt;TContext&gt;()</c> constrains on <see cref="DbContext"/> alone, and
+/// <c>EfCoreMediaStore</c> reaches the two tables through <c>context.Set&lt;T&gt;()</c>, which works
+/// on any context whose model has them. Implementing it bought nothing but two properties to
+/// declare.
+/// </para>
+/// <para>
+/// What a context does need is the one line that puts the tables in its model:
 /// <see cref="MediaModelBuilderExtensions.ApplyMedia(ModelBuilder, Action{MediaModelOptions})"/>
-/// at the end of <c>OnModelCreating</c>.
+/// at the end of <c>OnModelCreating</c>. That is the whole opt-in.
+/// </para>
 /// </summary>
+[Obsolete(
+    "IMediaDbContext is not required and is never read: UseEntityFrameworkCore<TContext> constrains on " +
+    "DbContext alone, and the store reaches both tables through context.Set<T>(). Remove it from your " +
+    "DbContext along with the two DbSet properties, and keep only the ApplyMedia() call in OnModelCreating. " +
+    "This interface will be removed in the next major version.")]
 public interface IMediaDbContext
 {
     /// <summary>The one table every uploaded file is recorded in.</summary>
@@ -189,5 +206,68 @@ public static class MediaModelBuilderExtensions
         modelBuilder.ApplyConfiguration(new MediaFileConfiguration(options));
         modelBuilder.ApplyConfiguration(new MediaAttachmentConfiguration(options));
         return modelBuilder;
+    }
+}
+
+/// <summary>
+/// The one media question a set of known ids cannot answer: which owners have media <b>at all</b>,
+/// as a queryable to compose into your own.
+/// </summary>
+public static class MediaQueryableExtensions
+{
+    /// <summary>
+    /// The formatted ids of every owner of <typeparamref name="TOwner"/> with something attached —
+    /// optionally in one role — as an <see cref="IQueryable{T}"/> that has not run yet.
+    /// <para>
+    /// <c>IMediaManager.ForMany</c> answers "which of <i>these</i> owners have images", which is
+    /// everything a listing page needs once it knows its page. Filtering <b>before</b> paging is a
+    /// different question — "the first 20 products that have an image" is not a subset of the first
+    /// 20 products — and it can only be asked where the two sets meet, which is the database:
+    /// <code>
+    /// var withImage = db.OwnersWithMedia&lt;Product&gt;("primary");
+    ///
+    /// var page = await db.Products
+    ///     .Where(p =&gt; withImage.Contains(p.Id.ToString()))
+    ///     .OrderBy(p =&gt; p.Name)
+    ///     .Skip(skip).Take(take)
+    ///     .ToListAsync(ct);
+    /// </code>
+    /// Negate it with <c>!withImage.Contains(...)</c> for the products still missing a photo.
+    /// </para>
+    /// <para>
+    /// Composable because nothing is materialised: it is a <c>SELECT DISTINCT OwnerEntityId</c>
+    /// over the attachment table, which EF Core folds into the outer query as a subquery. The
+    /// comparison is against the <b>stored</b> key — invariant, GUIDs in <c>"D"</c> format — so
+    /// write the owner side as the provider's own string conversion of the key and not as anything
+    /// culture-dependent.
+    /// </para>
+    /// <para>
+    /// One statement rather than a join to the files, because an attachment never points at a
+    /// deleted file: deleting one removes every attachment of it outright, even under soft delete.
+    /// That guarantee is what this method rests on, and it is documented on
+    /// <c>IMediaManager.DeleteAsync</c>.
+    /// </para>
+    /// </summary>
+    /// <typeparam name="TOwner">
+    /// The entity type, whose stored name comes from <c>[MediaEntity("…")]</c> or the type name —
+    /// read exactly as <c>IMediaManager.For(entity)</c> reads it.
+    /// </typeparam>
+    /// <param name="db">The context holding the media tables.</param>
+    /// <param name="role">One role, or <c>null</c> for "anything attached".</param>
+    public static IQueryable<string> OwnersWithMedia<TOwner>(this DbContext db, string? role = null)
+    {
+        ArgumentNullException.ThrowIfNull(db);
+
+        var entityName = MediaEntityNames.For(typeof(TOwner));
+
+        // Normalized only when there is one: MediaRoles.Normalize(null) is the "default" role,
+        // and null here means every role rather than that one.
+        var normalized = role is null ? null : MediaRoles.Normalize(role);
+
+        return db.Set<MediaAttachment>()
+            .Where(a => a.OwnerEntityName == entityName)
+            .Where(a => normalized == null || a.Role == normalized)
+            .Select(a => a.OwnerEntityId)
+            .Distinct();
     }
 }

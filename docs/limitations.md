@@ -56,10 +56,17 @@ db.Products.Remove(product);
 ```
 
 `DeleteAllAsync` deletes the files that entity alone was using and merely detaches the ones others
-still reference — deleting one product must not pull a shared image out of the rest.
+still reference — deleting one product must not pull a shared image out of the rest. It returns the
+ids it deleted, so cleanup of your own records about those files can act on the right half rather
+than guessing.
 
 Put it in one place if you would rather not remember it — a `SaveChanges` interceptor, or a
 repository base class.
+
+Nothing cascades **out** of the library either: records your application keeps about a file are
+invisible to it. Register `.OnFilesDeleted(...)` rather than cleaning up per call site, since the
+REST endpoint's own `DELETE /api/media/{id}` is a path your code never runs on. See
+[attaching to entities](attaching-to-entities.md#cleaning-up-your-own-records-about-a-file).
 
 ## No built-in migration between backends
 
@@ -202,6 +209,17 @@ var page = await media.ListAsync(new MediaQuery
 
 Raising the ceiling instead was the other option and is the wrong one: an entity with ten thousand
 attachments would then quietly turn one gallery render into a ten-thousand-row read.
+
+## A bulk owner read is one statement, which caps how many owners it can cover
+
+`ForMany` sends every owner id in one statement, by design — batching them would put back the
+round trips it exists to remove. Relational engines have a parameter limit (a few thousand on
+PostgreSQL and SQL Server), so a read over tens of thousands of owners will fail at the driver
+rather than silently degrade.
+
+That is the right failure. `ForMany` is for a page of entities, and a listing asking about more
+owners than a statement will take has a paging problem rather than a media one. Page it, or ask
+`OwnersWithMedia<T>()` instead, which composes server-side and carries no id list at all.
 
 ## No quotas
 

@@ -99,13 +99,13 @@ public sealed class DapperStoreContractTests : StoreContractTests
     }
 }
 
-/// <summary>A context with the media table and one entity of the application's own.</summary>
-public sealed class MediaTestContext(DbContextOptions<MediaTestContext> options) : DbContext(options), IMediaDbContext
+/// <summary>
+/// A context with the media tables and one entity of the application's own. No interface to
+/// implement and no media <c>DbSet</c> to declare — <c>ApplyMedia()</c> is the whole opt-in, which
+/// is exactly what this context is here to demonstrate the store working against.
+/// </summary>
+public sealed class MediaTestContext(DbContextOptions<MediaTestContext> options) : DbContext(options)
 {
-    public DbSet<MediaFile> MediaFiles => Set<MediaFile>();
-
-    public DbSet<MediaAttachment> MediaAttachments => Set<MediaAttachment>();
-
     public DbSet<Product> Products => Set<Product>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)

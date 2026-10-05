@@ -42,6 +42,29 @@ missing.
 | `DisableStartupValidation()` | Run it yourself with `services.ValidateMediaAsync()`. |
 | `UseKeyGenerator<T>()` | Replaces how storage paths are chosen. |
 | `UseEntityKeyAccessor<T>()` | Replaces how entity keys are read. |
+| `OnFilesDeleted<THandler>()` | Registers an `IMediaFilesDeletedHandler`, scoped. Call it more than once for several. |
+| `OnFilesDeleted((services, ids, ct) => …)` | The same, written inline. `services` is the delete's own scope. |
+
+### Files-deleted handlers
+
+Nothing cascades out of this library, so an application keeping records of its own about a file —
+per-language alt text, a search index entry, a CDN edge — registers a handler rather than
+remembering the cleanup at every call site. The one that gets missed otherwise is
+`DELETE /api/media/{id}`, where no application code runs.
+
+```csharp
+.OnFilesDeleted(async (serviceProvider, ids, ct) =>
+{
+    var db = serviceProvider.GetRequiredService<AppDbContext>();
+    await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+})
+```
+
+Raised after the files are gone, with the ids that actually went — `DeleteAllAsync` passes the
+batch it deleted and **not** the files it merely detached. Handlers run in registration order, and
+each one's exceptions are logged and swallowed: the bytes are already gone, so a throw would report
+a completed delete as a failure and stop the handlers after it. Same contract as
+`ISettingChangedHandler<T>` in DotNetBoost.Settings.
 
 ## Metadata stores — one of
 

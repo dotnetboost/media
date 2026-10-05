@@ -89,6 +89,77 @@ or a role holding more than 500 files throws `InvalidMediaException` pointing at
 `IMediaManager.ListAsync`, which takes `Skip` and `Take`. Returning the first 500 as though they
 were the lot would be a lie a caller could not detect.
 
+### Reading a whole page of entities at once
+
+`For(entity)` is one entity at a time by construction, so drawing a listing through it costs a read
+per row — two, once the files are wanted as well. A page of fifty products is then a hundred
+queries to show fifty thumbnails, which is not a filter on a table so much as a scan with a filter
+printed on it.
+
+`ForMany` is the same questions asked about many owners, each answered in **one** store round trip
+whatever the owner count:
+
+```csharp
+var products = await db.Products.OrderBy(p => p.Name).Skip(skip).Take(50).ToListAsync(ct);
+
+var heroes = await media.ForMany(products).GetByRoleAsync("primary", ct);
+
+foreach (var product in products)
+    Draw(product, heroes[product.Id.ToString(CultureInfo.InvariantCulture)]);
+```
+
+| | |
+|---|---|
+| `ListWithRolesAsync()` | each owner's files with the role each holds — the bulk `For(e).ListWithRolesAsync()`, same order, same per-link meaning |
+| `GetByRoleAsync(role)` | each owner's file in a single-valued role, or `null` |
+| `WhichHaveAttachmentsAsync(role?)` | which of the asked-about owners have anything at all — a set of the ones that do, not an entry each |
+
+Results are keyed by the owner's **formatted entity id** — the same invariant string an attachment
+row stores, so `product.Id.ToString(CultureInfo.InvariantCulture)` finds a product's entry.
+
+**Every id you asked about is in the result**, including the ones with nothing attached: they map to
+an empty list or to `null`. You never need `GetValueOrDefault`, and the first product without a
+photo does not throw.
+
+Pass the entities, or the keys if that is what you hold:
+
+```csharp
+media.ForMany(products)                 // one entity type per call
+media.ForMany("Product", [7, 8, 9])     // keys as they are — int, long, Guid, string
+```
+
+One entity type per call: the name comes from the first entity's own type, and an entity of another
+type later in the sequence is refused rather than read under the wrong name. A repeated id is read
+once. An empty collection answers empty without touching the store.
+
+`ForMany` reads; it does not write. Attaching, detaching and reordering are per entity by nature —
+a role and a position belong to one link — so they stay on `For(entity)`.
+
+### Filtering by "has an image" before paging
+
+`ForMany` answers "which of *these* owners have images", which is all a listing needs once it knows
+its page. Filtering **before** paging is a different question: "the first 20 products that have an
+image" is not a subset of the first 20 products, so it can only be asked where both sets live. In
+the EF Core package:
+
+```csharp
+var withImage = db.OwnersWithMedia<Product>("primary");   // IQueryable<string>, not run yet
+
+var page = await db.Products
+    .Where(p => withImage.Contains(p.Id.ToString()))
+    .OrderBy(p => p.Name)
+    .Skip(skip).Take(take)
+    .ToListAsync(ct);
+```
+
+Negate it with `!withImage.Contains(...)` for the products still missing a photo. Nothing is
+materialised — it is a `SELECT DISTINCT OwnerEntityId` that EF folds into your query as a subquery —
+so it composes into whatever you are already building. Leave `role` off for "anything attached".
+
+Write the owner side as the provider's own string conversion of the key (`p.Id.ToString()`, which
+EF translates to a cast in SQL), not as anything that formats client-side under the current
+culture: the comparison is against the stored invariant key.
+
 ### Declaring an entity's roles
 
 By default a role is free text and nothing checks it. An entity can opt in by declaring what it
@@ -270,6 +341,8 @@ Three operations, and the difference matters:
 | `For(e).DetachAllAsync()` | all of that entity's | untouched | **untouched** |
 | `For(e).DeleteAllAsync()` | all of that entity's | sole-held files deleted | those files' |
 
+`DeleteAllAsync` returns the ids it deleted; the others return a count or a boolean.
+
 `DeleteAsync` removes the file from the library, and therefore from **every** entity using it. A UI
 offering "remove this image from the product" wants `DetachAsync`, which removes one link and never
 touches the bytes. A `role` of `null` detaches the file from every role on that entity.
@@ -298,11 +371,62 @@ public async Task DeleteAsync(int id, CancellationToken ct)
 
 `DeleteAllAsync` deletes the files **this entity was the only holder of** and merely detaches the
 ones other entities still reference. A shared image surviving is the point: deleting one product
-must not pull an image out of every other product using it. Its return value counts only the files
-that were actually destroyed.
+must not pull an image out of every other product using it.
 
-If you would rather not remember, put it in one place: an EF Core `SaveChanges` interceptor that
-looks for deleted entities, or a repository base class.
+**It returns the ids it deleted**, not a count — the detached ones are not in the list. That
+distinction is the whole value of the return: if your application keeps records of its own against
+a file, acting on the wrong half destroys data belonging to a file that is still in use.
+
+```csharp
+var deleted = await media.For(product).DeleteAllAsync(ct);
+await db.MediaAltText.Where(t => deleted.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+```
+
+To ask before acting — for a dialog that has to say "2 of these 5 are used elsewhere and will
+stay" — `WhichAreSharedAsync` is the same sole-holder test on its own, in one query whatever the
+file count:
+
+```csharp
+var attached = await media.For(product).ListAsync(ct);
+var staying  = await media.For(product).WhichAreSharedAsync([.. attached.Select(f => f.Id)], ct);
+```
+
+If you would rather not remember the cleanup at all, put it in one place: an EF Core `SaveChanges`
+interceptor that looks for deleted entities, or a repository base class.
+
+## Cleaning up your own records about a file
+
+Nothing cascades *out* of this library, which is correct — a media row is not a foreign key to
+anything, and a storage library guessing at your tables would be worse. But that leaves the cleanup
+to be remembered at every call site, and the one that gets missed is the REST endpoint's own
+`DELETE /api/media/{id}`, where no application code runs at all.
+
+Register a handler instead, and the cleanup lives where the delete is:
+
+```csharp
+services.AddMedia()
+    .UseEntityFrameworkCore<AppDbContext>()
+    .UseFileSystem("./uploads")
+    .OnFilesDeleted(async (serviceProvider, ids, ct) =>
+    {
+        var db = serviceProvider.GetRequiredService<AppDbContext>();
+        await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+    })
+    .Build();
+```
+
+`.OnFilesDeleted<THandler>()` registers a class instead, for anything longer than a statement.
+Handlers are scoped — the `IServiceProvider` passed in is the delete's own scope, so a `DbContext`
+resolved from it is the one the delete used.
+
+| | |
+|---|---|
+| **When** | After the files are gone. A handler is given ids rather than `MediaFileInfo`s because the rows they name no longer exist. |
+| **What** | `DeleteAsync` passes the one file it deleted. `DeleteAllAsync` passes the batch it deleted — **not** the files it merely detached. A delete that found nothing notifies nobody. |
+| **Order** | Registration order. Register several: one for alt text, one for the search index. |
+| **Failures** | Logged and swallowed. The bytes are already gone, so throwing would report a completed delete as a failure and invite a retry of something that cannot be repeated — and would stop the handlers after it from hearing about the delete at all. |
+
+Same contract as `ISettingChangedHandler<T>` in DotNetBoost.Settings.
 
 There is a window between finding a file unshared and removing its bytes in which another request
 could attach it, leaving that new link pointing at bytes that are gone. Closing it needs a lock this

@@ -120,6 +120,38 @@ public interface IMediaStore
         MediaOwner owner, string? role = null, CancellationToken ct = default);
 
     /// <summary>
+    /// Every attachment belonging to <b>any</b> of <paramref name="entityIds"/> under one entity
+    /// type — or only those in <paramref name="role"/> — each paired with the file it points at,
+    /// ordered by owner, then by role, then by <see cref="MediaAttachment.SortOrder"/>.
+    /// <para>
+    /// <b>One round trip, whatever the owner count.</b> That is the whole reason this sits beside
+    /// <see cref="ListAttachmentsAsync"/> rather than being left to the caller: a listing page
+    /// drawing fifty products would otherwise pay a query per row — two, once the files are wanted
+    /// as well — and a filter printed on a scan is not a filter. Implementations must issue a
+    /// single statement; looping <see cref="ListAttachmentsAsync"/> over the ids is exactly the
+    /// cost this method exists to remove.
+    /// </para>
+    /// <para>
+    /// The file is joined here rather than read afterwards for the same reason. Soft-deleted files
+    /// are excluded, and so are the links pointing at them — though that pairing cannot normally
+    /// arise, because deleting a file removes its attachments outright even under soft delete.
+    /// </para>
+    /// <para>
+    /// An id with nothing attached is simply absent from the result; the engine is the one that
+    /// turns that into an empty entry, since only it knows which ids were asked about.
+    /// </para>
+    /// </summary>
+    /// <param name="entityName">The owning entity type, as stored.</param>
+    /// <param name="entityIds">The owners' keys, already formatted. Empty returns nothing.</param>
+    /// <param name="role">One role, or <c>null</c> for every role.</param>
+    /// <param name="ct">Cancels the operation.</param>
+    Task<IReadOnlyList<MediaOwnerAttachment>> ListAttachmentsForOwnersAsync(
+        string entityName,
+        IReadOnlyCollection<string> entityIds,
+        string? role = null,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Which of <paramref name="mediaFileIds"/> are still attached to some owner other than
     /// <paramref name="excluding"/>.
     /// <para>

@@ -7,7 +7,124 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`IMediaManager.ForMany(...)` — the media for a page of entities in one store round trip.**
+  `IMediaAccessor` is one owner at a time by construction, so a listing that draws an image per row
+  paid a query per row through it, and two once the files were wanted as well. A page of fifty
+  products cost a hundred reads to show fifty thumbnails. That is not a filter on a table; it is a
+  scan with a filter printed on it.
+
+  `ForMany(entities)` and `ForMany(entityName, keys)` return an `IMediaBulkAccessor` with the
+  three read questions a listing actually asks — `ListWithRolesAsync`, `GetByRoleAsync`,
+  `WhichHaveAttachmentsAsync` — each one store call however many owners were asked about. Results
+  are keyed by the owner's formatted entity id, and **every id asked about is present**: an owner
+  with nothing attached maps to an empty list or to `null`, so no caller needs
+  `GetValueOrDefault` and the first row without a photo does not throw.
+
+  `ForMany` and `For` agree on ordering and on the per-link-versus-per-file distinction, so moving
+  a listing from one to the other changes its cost and nothing else. The writes stayed on
+  `For(entity)` — a role and a position belong to one link, so there is nothing to batch.
+
+  Behind it, `IMediaStore` gains `ListAttachmentsForOwnersAsync(entityName, entityIds, role)`,
+  which returns each attachment paired with the live file it points at. **The join is the store's,
+  not the engine's**, which is what makes the whole read one statement rather than two; a custom
+  store that loops `ListAttachmentsAsync` over the ids will pass the contract tests and defeat the
+  entire point. The contract spells that out, and `StoreContractTests` covers a fifty-owner read.
+  Implemented as a join in EF Core and Dapper and as a `$lookup` aggregation in MongoDB.
+
+- **`DbContext.OwnersWithMedia<TOwner>(role?)` in DotNetBoost.Media.EntityFrameworkCore** — the one
+  media question a known set of ids cannot answer. "The first 20 products that have an image" is
+  not a subset of the first 20 products, so it has to be asked before paging, where the product
+  rows and the attachment rows meet. It returns an `IQueryable<string>` of owner ids that has not
+  run, so it folds into the application's own query as a subquery:
+
+  ```csharp
+  var withImage = db.OwnersWithMedia<Product>("primary");
+
+  await db.Products.Where(p => withImage.Contains(p.Id.ToString()))
+      .OrderBy(p => p.Name).Skip(skip).Take(take).ToListAsync(ct);
+  ```
+
+  It is a single statement over the attachment table rather than a join to the files because of a
+  guarantee made elsewhere: deleting a file removes every attachment of it outright, **even under
+  soft delete**. That is documented on `IMediaManager.DeleteAsync`, and this filter is now a second
+  reason it has to stay true.
+
+- **`IMediaFilesDeletedHandler`, registered with `.OnFilesDeleted(...)`** — notified after files are
+  deleted, so an application can clean up records this library has no idea exist: per-language alt
+  text, search index entries, CDN purges.
+
+  Nothing cascading out of the library is correct — a media row is not a foreign key to anything —
+  but it left the cleanup to be remembered at every call site, and the one that gets missed is
+  `DELETE /api/media/{id}`, where no application code runs at all.
+
+  ```csharp
+  .OnFilesDeleted(async (serviceProvider, ids, ct) =>
+  {
+      var db = serviceProvider.GetRequiredService<AppDbContext>();
+      await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+  })
+  ```
+
+  `.OnFilesDeleted<THandler>()` registers a class instead. Raised by `DeleteAsync` with the one
+  file it deleted, and by `DeleteAllAsync` with the batch it deleted — **not** the files it merely
+  detached, which are still in use and whose records must survive. Handlers run in registration
+  order and their exceptions are logged and swallowed, the same contract
+  `ISettingChangedHandler<T>` has in DotNetBoost.Settings: the bytes are already gone, so a throw
+  could only report a completed delete as a failure, invite a retry of something that cannot be
+  repeated, and stop the handlers after it from hearing about the delete at all.
+
+- **`IMediaAccessor.WhichAreSharedAsync(ids)`** — the sole-holder test `DeleteAllAsync` makes, asked
+  on its own. `IMediaStore.FindSharedAsync` could already answer "which of these files does some
+  other entity still hold" in one statement, but nothing on `IMediaManager` reached it, so an
+  application could not ask. For a confirmation dialog that has to say "2 of these 5 images are
+  used by other products and will stay".
+
+- **`EntityKey.AddressingVersion`** — the entity-addressing spec version this implementation
+  conforms to, published as `"1.0"`. This library and DotNetBoost.MultiLingual resolve entity names
+  and format keys identically, which is what lets an application join a media row to a translation
+  row on `(EntityName, EntityId)` — and nothing enforced it. The agreement rested on comments in
+  two repositories that could drift apart one release at a time. Both libraries now publish the
+  same constant under the same name, so a consumer can assert they match and fail at startup rather
+  than find out as rows that quietly stopped joining. Bumped for **any** change to name
+  resolution, key formatting or either length limit.
+
+  The rules are written out in the README as **DotNetBoost Entity Addressing v1**, and
+  `DotNetBoost.Media.TestSupport` now ships `EntityAddressingConformance` — an abstract xUnit class
+  to derive from — so a consumer runs one suite instead of hand-writing the assertions. This
+  library runs it against itself, which both proves the suite asserts something and holds the
+  library to the spec it publishes.
+
+- `samples/SampleApp` maps `PUT /api/products/{id}`, so the dashboard's product page can save the
+  name, SKU and price it shows. Its own columns only — a product's media is attachment rows
+  pointing at it, so saving the product cannot disturb them and attaching an image is not a save.
+
 ### Changed
+
+- **`IMediaAccessor.DeleteAllAsync` now returns `IReadOnlyList<Guid>` rather than `int`.** Breaking,
+  and taken now because it is cheap in prerelease and expensive later.
+
+  A count cannot be acted on. `DeleteAllAsync` deletes the files an entity was the sole holder of
+  and merely detaches the rest, so an application keeping records of its own against a file had to
+  know **which** files went — and its only options were a call per file to `GetAttachmentsAsync` or
+  a guess. Guessing in the wrong direction destroys records belonging to a file that survived. The
+  list holds exactly the files that were destroyed; the detached ones are not in it.
+
+  Callers reading the count want `.Count`; callers ignoring it need no change.
+
+- **`IMediaDbContext` is `[Obsolete]`** and will be removed in the next major version. Its doc
+  comment claimed implementing it was how a context opted in, and both halves of that were false:
+  `UseEntityFrameworkCore<TContext>` constrains on `DbContext` alone, and `EfCoreMediaStore` reaches
+  both tables through `context.Set<T>()` and never read the interface's properties. Contexts
+  implementing it on the strength of that comment were declaring two `DbSet`s for nothing. Delete
+  it and the two properties; keep the `ApplyMedia()` call in `OnModelCreating`, which is and always
+  was the whole opt-in. The sample, the test contexts, the README and
+  [docs/metadata-stores.md](docs/metadata-stores.md) no longer use it.
+
+- `samples/SampleApp`'s `GET /api/products` reads its images with `ForMany` instead of looping
+  `For(product)`, which takes the listing from two queries per product to one for the page. The
+  single-product endpoint still uses `For`, which is the right shape for one.
 
 - `clients/dashboard` picks a role with a **box per role** rather than a dropdown over the library.
   A product now has its own page, `/products/{id}`, where each role the entity declares is drawn as
@@ -23,12 +140,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
   `MediaPickerModal` gains a `fixedRole` prop for this. Without it the picker is unchanged, and the
   Media page is untouched.
-
-### Added
-
-- `samples/SampleApp` maps `PUT /api/products/{id}`, so the dashboard's product page can save the
-  name, SKU and price it shows. Its own columns only — a product's media is attachment rows
-  pointing at it, so saving the product cannot disturb them and attaching an image is not a save.
 
 ## [1.0.0-preview.1] - 2026-09-28
 

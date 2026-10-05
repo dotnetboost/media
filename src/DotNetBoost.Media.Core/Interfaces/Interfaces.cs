@@ -56,3 +56,54 @@ public interface IChecksumCalculator
     /// <summary>The final hash, lowercase hex. Call once, after the last chunk.</summary>
     string Finish();
 }
+
+/// <summary>
+/// Notified after files are deleted, so an application can clean up records this library has no
+/// idea exist — per-language alt text, search index entries, CDN purges.
+/// <para>
+/// <b>Nothing cascades out of this library</b>, and that is correct: a media row is not a foreign
+/// key to anything, and guessing at an application's own tables is not a storage provider's job.
+/// The cost of that is otherwise paid at every call site, and one forgotten call site strands rows
+/// nobody will ever look for again — a file deleted through the REST endpoint rather than through
+/// your own code is the one that gets missed, because no application code runs on that path at
+/// all. Registering a handler here puts the cleanup where the delete is instead of where the
+/// caller is.
+/// <code>
+/// services.AddMedia()
+///         .UseEntityFrameworkCore&lt;AppDbContext&gt;()
+///         .UseFileSystem("./uploads")
+///         .OnFilesDeleted(async (services, ids, ct) =&gt;
+///         {
+///             var db = services.GetRequiredService&lt;AppDbContext&gt;();
+///             await db.MediaAltText.Where(t =&gt; ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
+///         })
+///         .Build();
+/// </code>
+/// </para>
+/// <para>
+/// Registered implementations are invoked in registration order, and <b>exceptions are logged and
+/// swallowed</b> — the same contract <c>ISettingChangedHandler&lt;T&gt;</c> has in
+/// DotNetBoost.Settings. A handler that cannot reach its own table must not turn a completed
+/// delete into a failed one: the bytes are already gone, so the caller would retry something that
+/// cannot be done again, and one broken handler would take the others down with it.
+/// </para>
+/// <para>
+/// Raised <b>after</b> the files are gone, so a handler cannot read the rows it is being told
+/// about. It is given ids, not <c>MediaFileInfo</c>s, for that reason — the thing they named no
+/// longer exists.
+/// </para>
+/// </summary>
+public interface IMediaFilesDeletedHandler
+{
+    /// <summary>
+    /// Called with the files that were just deleted. Never empty.
+    /// <para>
+    /// <c>IMediaManager.DeleteAsync</c> passes the one file it deleted.
+    /// <c>IMediaAccessor.DeleteAllAsync</c> passes the batch it deleted — <b>not</b> the files it
+    /// merely detached, which are still in use by somebody else and whose records must survive.
+    /// </para>
+    /// </summary>
+    /// <param name="mediaFileIds">The deleted files' ids.</param>
+    /// <param name="ct">Cancels the operation.</param>
+    Task OnDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default);
+}

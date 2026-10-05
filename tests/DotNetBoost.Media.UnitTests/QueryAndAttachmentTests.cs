@@ -768,7 +768,7 @@ public class DetachAndDeleteTests
 
         var deleted = await harness.Media.For(new Product { Id = 1 }).DeleteAllAsync();
 
-        Assert.Equal(2, deleted);
+        Assert.Equal(2, deleted.Count);
         Assert.Single(harness.Storage.Paths);
 
         var left = await harness.Media.ListAsync();
@@ -793,8 +793,9 @@ public class DetachAndDeleteTests
 
         var deleted = await harness.Media.For(new Product { Id = 1 }).DeleteAllAsync();
 
-        // Only the file nobody else held is counted, because only it was destroyed.
-        Assert.Equal(1, deleted);
+        // Only the file nobody else held is reported, because only it was destroyed — and it is
+        // named rather than counted, so a caller can clean up its own records about exactly it.
+        Assert.Equal(mine.Id, Assert.Single(deleted));
 
         Assert.Null(await harness.Media.FindAsync(mine.Id));
         Assert.NotNull(await harness.Media.FindAsync(shared.Id));
@@ -815,7 +816,7 @@ public class DetachAndDeleteTests
         await harness.Media.For(product).SetAsync("seo", file.Id);
 
         // One file deleted, not two, though it was attached twice.
-        Assert.Equal(1, await harness.Media.For(product).DeleteAllAsync());
+        Assert.Equal(file.Id, Assert.Single(await harness.Media.For(product).DeleteAllAsync()));
 
         Assert.Null(await harness.Media.FindAsync(file.Id));
         Assert.Empty(harness.Store.Attachments);
@@ -828,7 +829,7 @@ public class DetachAndDeleteTests
         var harness = Harness.Create();
         await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
 
-        Assert.Equal(0, await harness.Media.For(new Product { Id = 9 }).DeleteAllAsync());
+        Assert.Empty(await harness.Media.For(new Product { Id = 9 }).DeleteAllAsync());
         Assert.Equal(1, harness.Store.Count);
     }
 }
