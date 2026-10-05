@@ -31,8 +31,10 @@ public interface IMediaKeyGenerator
 /// (<c>[Key]</c>, <c>Id</c>, <c>{TypeName}Id</c>); the EF Core provider replaces it with one that
 /// reads the model instead.
 /// <para>
-/// Deliberately the same contract as DotNetBoost.MultiLingual's, so an application that uses both
-/// libraries keys its entities one way.
+/// Both halves are rules of <b>DotNetBoost Entity Addressing v1</b> — see
+/// <see cref="Metadata.EntityKey.AddressingVersion"/> — so an application running any library that
+/// implements the same version keys its entities one way, and the version constant is what says so
+/// rather than a comment.
 /// </para>
 /// </summary>
 public interface IEntityKeyAccessor
@@ -82,10 +84,9 @@ public interface IChecksumCalculator
 /// </para>
 /// <para>
 /// Registered implementations are invoked in registration order, and <b>exceptions are logged and
-/// swallowed</b> — the same contract <c>ISettingChangedHandler&lt;T&gt;</c> has in
-/// DotNetBoost.Settings. A handler that cannot reach its own table must not turn a completed
-/// delete into a failed one: the bytes are already gone, so the caller would retry something that
-/// cannot be done again, and one broken handler would take the others down with it.
+/// swallowed</b>. A handler that cannot reach its own table must not turn a completed delete into
+/// a failed one: the bytes are already gone, so the caller would retry something that cannot be
+/// done again, and one broken handler would take the others down with it.
 /// </para>
 /// <para>
 /// Raised <b>after</b> the files are gone, so a handler cannot read the rows it is being told

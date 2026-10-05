@@ -1,4 +1,5 @@
 using DotNetBoost.Media.Core.Metadata;
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using Xunit;
 
@@ -56,6 +57,18 @@ public abstract class EntityAddressingConformance
     protected abstract string ResolveEntityName(Type type);
 
     /// <summary>
+    /// Its unset-key test — the one that decides whether an entity can be addressed at all.
+    /// </summary>
+    protected abstract bool IsKeyUnset(object? value);
+
+    /// <summary>
+    /// Its convention key discovery, returning the formatted key or <c>null</c> for an unset one.
+    /// Pass the convention accessor, not a provider's model-reading one: the shared rule is the
+    /// fallback both libraries use when there is no model to consult.
+    /// </summary>
+    protected abstract string? DiscoverKey(object entity);
+
+    /// <summary>
     /// A key of each type the one column has to serve, including the values whose formatting is
     /// culture-dependent if anyone forgets to pin the culture.
     /// </summary>
@@ -89,6 +102,13 @@ public abstract class EntityAddressingConformance
             "rows keyed by one cannot be joined to rows keyed by the other.");
     }
 
+    /// <summary>
+    /// The shared rule is the LIMIT, not where each library enforces it. One may refuse an
+    /// over-long key as it formats it and another at the write, where it can name the entity too;
+    /// both are conformant, and demanding a throw from <see cref="FormatKey"/> would fail the
+    /// second for being more helpful. So this compares the published limits and leaves the
+    /// refusal to each library's own tests.
+    /// </summary>
     [Fact]
     public void It_stores_keys_in_a_column_of_the_same_width() =>
         Assert.True(
@@ -168,15 +188,6 @@ public abstract class EntityAddressingConformance
     }
 
     [Fact]
-    public void It_refuses_a_key_longer_than_the_column()
-    {
-        var tooLong = new string('k', MaxKeyLength + 1);
-
-        Assert.ThrowsAny<Exception>(() => FormatKey(tooLong));
-        Assert.ThrowsAny<Exception>(() => EntityKey.ToKeyString(tooLong));
-    }
-
-    [Fact]
     public void It_accepts_a_key_exactly_as_long_as_the_column()
     {
         // The boundary in the other direction, so an off-by-one in either library's check turns up
@@ -187,6 +198,76 @@ public abstract class EntityAddressingConformance
         Assert.Equal(exact, EntityKey.ToKeyString(exact));
     }
 
+    [Fact]
+    public void It_treats_the_same_values_as_unset()
+    {
+        // The values the spec calls "not assigned yet". A library that disagrees on ONE of them
+        // addresses rows the other addresses nothing for: `byte Id = 0` was exactly that, read as
+        // the key "0" by one library and as unassigned by the other.
+        foreach (var value in new object?[] { null, 0, 0L, (short)0, (byte)0, Guid.Empty, string.Empty })
+        {
+            var mine = EntityKey.IsUnset(value);
+
+            Assert.True(mine, $"DotNetBoost.Media should treat {Describe(value)} as unset.");
+            Assert.True(
+                IsKeyUnset(value),
+                $"{Implementation} treats {Describe(value)} as an assigned key; DotNetBoost.Media treats it " +
+                "as unset. One of them would address rows the other believes belong to nothing.");
+        }
+    }
+
+    [Fact]
+    public void It_treats_an_assigned_key_as_set()
+    {
+        // The other direction, so a library that calls everything unset — and therefore silently
+        // writes nothing — fails here rather than looking like it agrees.
+        foreach (var value in new object?[] { 1, -1, 1L, (short)1, (byte)1, Guid.NewGuid(), "k" })
+        {
+            Assert.False(EntityKey.IsUnset(value), $"DotNetBoost.Media should treat {Describe(value)} as set.");
+            Assert.False(
+                IsKeyUnset(value),
+                $"{Implementation} treats {Describe(value)} as unset; DotNetBoost.Media treats it as a key.");
+        }
+    }
+
+    [Fact]
+    public void It_discovers_a_key_marked_with_the_Key_attribute() =>
+        Assert.Equal("7", DiscoverKey(new AnnotatedKeyEntity { Code = 7 }));
+
+    [Fact]
+    public void It_discovers_a_key_named_Id() =>
+        Assert.Equal("7", DiscoverKey(new PlainEntity { Id = 7 }));
+
+    [Fact]
+    public void It_discovers_a_key_named_TypeNameId() =>
+        Assert.Equal("7", DiscoverKey(new SuffixKeyEntity { SuffixKeyEntityId = 7 }));
+
+    [Fact]
+    public void It_prefers_the_Key_attribute_over_a_property_named_Id() =>
+        // Order matters, not just membership: an entity with both must key on the annotated one in
+        // both libraries, or the same entity is addressed by two different values.
+        Assert.Equal("7", DiscoverKey(new AnnotatedAndIdEntity { Code = 7, Id = 99 }));
+
+    [Fact]
+    public void It_answers_null_for_a_key_that_is_not_assigned_yet() =>
+        Assert.Null(DiscoverKey(new PlainEntity()));
+
+    [Fact]
+    public void It_refuses_a_composite_key() =>
+        // Refused rather than resolved to one of them: reflection does not order properties, so
+        // picking the first would key the entity on whichever this runtime returned.
+        Assert.ThrowsAny<Exception>(() => DiscoverKey(new CompositeKeyEntity { Left = 1, Right = 2 }));
+
+    [Fact]
+    public void It_ignores_a_property_it_cannot_read() =>
+        // A write-only `Id` is not a key. Eligible on name alone, so a library matching by name
+        // without checking readability would pick it and then fail to read a value from it.
+        Assert.Equal("7", DiscoverKey(new WriteOnlyIdEntity { WriteOnlyIdEntityId = 7 }));
+
+    /// <summary>How a key value reads in a failure message, with its type and nulls spelled out.</summary>
+    private static string Describe(object? value) =>
+        value is null ? "null" : $"({value.GetType().Name}){(value is string s ? $"\"{s}\"" : value)}";
+
     /// <summary>
     /// An entity neither library has an attribute on, so both must resolve it to its type name.
     /// Nested here so a consumer gets it with the suite rather than declaring one of its own.
@@ -195,5 +276,61 @@ public abstract class EntityAddressingConformance
     {
         /// <summary>Its key, discovered by the convention both libraries share.</summary>
         public int Id { get; set; }
+    }
+
+    /// <summary>Keyed by attribute rather than by name — the first rule of key discovery.</summary>
+    public sealed class AnnotatedKeyEntity
+    {
+        /// <summary>Its key.</summary>
+        [Key]
+        public int Code { get; set; }
+    }
+
+    /// <summary>Carries both, so the ORDER of the rules is asserted and not just their presence.</summary>
+    public sealed class AnnotatedAndIdEntity
+    {
+        /// <summary>Its key, because <c>[Key]</c> outranks the name.</summary>
+        [Key]
+        public int Code { get; set; }
+
+        /// <summary>Not its key, despite the name.</summary>
+        public int Id { get; set; }
+    }
+
+    /// <summary>Keyed by the <c>{TypeName}Id</c> fallback — the third rule.</summary>
+    public sealed class SuffixKeyEntity
+    {
+        /// <summary>Its key.</summary>
+        public int SuffixKeyEntityId { get; set; }
+    }
+
+    /// <summary>Two <c>[Key]</c> properties, which one column cannot hold.</summary>
+    public sealed class CompositeKeyEntity
+    {
+        /// <summary>Half of a composite key.</summary>
+        [Key]
+        public int Left { get; set; }
+
+        /// <summary>The other half.</summary>
+        [Key]
+        public int Right { get; set; }
+    }
+
+    /// <summary>
+    /// Has a property named <c>Id</c> that cannot be read, so key discovery must skip it and fall
+    /// through to the <c>{TypeName}Id</c> rule.
+    /// </summary>
+    public sealed class WriteOnlyIdEntity
+    {
+        private int _ignored;
+
+        /// <summary>Write-only, and therefore not a key.</summary>
+        public int Id { set => _ignored = value; }
+
+        /// <summary>Its actual key.</summary>
+        public int WriteOnlyIdEntityId { get; set; }
+
+        /// <summary>Keeps the compiler from warning that the backing field is never read.</summary>
+        public int Ignored() => _ignored;
     }
 }
