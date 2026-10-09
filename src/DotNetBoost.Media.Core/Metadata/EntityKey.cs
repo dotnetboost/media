@@ -31,8 +31,9 @@ public static class EntityKey
     ///     DotNetBoost.Media.Core.Metadata.EntityKey.AddressingVersion,
     ///     DotNetBoost.MultiLingual.Core.Metadata.EntityKey.AddressingVersion);
     /// </code>
-    /// <c>DotNetBoost.Media.TestSupport.EntityAddressingConformance</c> is that assertion and the
-    /// rest of the rules, as a theory to run rather than to hand-write.
+    /// That one equality is the whole of the dependency. This library also runs the full rule set
+    /// against itself, so the version published here is one it is held to rather than one it
+    /// merely claims.
     /// </para>
     /// <para>
     /// <b>Bump it for ANY change</b> to entity-name resolution, key discovery, key formatting,

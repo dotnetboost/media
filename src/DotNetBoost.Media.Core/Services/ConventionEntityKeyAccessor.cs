@@ -13,9 +13,8 @@ namespace DotNetBoost.Media.Core.Services;
 /// <para>
 /// The rule is part of the versioned spec — see
 /// <see cref="EntityKey.AddressingVersion"/> — so an application running another library that
-/// implements the same version keys its entities one way, and
-/// <c>DotNetBoost.Media.TestSupport.EntityAddressingConformance</c> asserts it rather than leaving
-/// it to a comment.
+/// implements the same version keys its entities one way — and this library's own suite asserts
+/// that rule rather than leaving it to a comment.
 /// </para>
 /// <para>
 /// Replaced by the EF Core provider, which reads the actual model and is therefore right about
