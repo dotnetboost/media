@@ -383,11 +383,12 @@ Assert.Equal(
     DotNetBoost.MultiLingual.Core.Metadata.EntityKey.AddressingVersion);
 ```
 
-`DotNetBoost.Media.TestSupport` ships that assertion and the rest of the rules as
-`EntityAddressingConformance`, an abstract xUnit class to derive from — so the agreement is a suite
-you run rather than four paragraphs you take on trust. **The version is bumped for any change to
-name resolution, key formatting or either length limit**, including one that looks harmless from
-inside a single library.
+**The version is bumped for any change to name resolution, key formatting or either length limit**,
+including one that looks harmless from inside a single library. So that one equality is the whole of
+the dependency: there is nothing further to install and nothing to keep in step by hand.
+
+`EntityKey.MaxLength` and `MediaEntityNames.MaxLength` are public as well, for a consumer that wants
+to compare the limits it stores keys and names under rather than trust the version alone.
 
 ## Contributing
 
