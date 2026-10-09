@@ -174,7 +174,7 @@ Entity addressing goes further than a shared convention. This library and DotNet
 resolve entity names and format keys **identically**, which is what lets an application join a
 media row to a translation row on `(EntityName, EntityId)`. Nothing enforced that agreement for a
 while — it rested on comments in two repositories — so both now publish
-`EntityKey.AddressingVersion`, and `DotNetBoost.Media.TestSupport.EntityAddressingConformance` is
-the suite that holds them to it. The rules are written out in the
+`EntityKey.AddressingVersion`, and each runs the full rule set against itself, so the version each
+publishes is one it is held to. The rules are written out in the
 [README](https://github.com/dotnetboost/media/blob/main/README.md#dotnetboost-entity-addressing-v1)
 as DotNetBoost Entity Addressing v1.

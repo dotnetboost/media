@@ -102,11 +102,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   than find out as rows that quietly stopped joining. Bumped for **any** change to name
   resolution, key formatting or either length limit.
 
-  The rules are written out in the README as **DotNetBoost Entity Addressing v1**, and
-  `DotNetBoost.Media.TestSupport` now ships `EntityAddressingConformance` — an abstract xUnit class
-  to derive from — so a consumer runs one suite instead of hand-writing the assertions. This
-  library runs it against itself, which both proves the suite asserts something and holds the
-  library to the spec it publishes.
+  The rules are written out in the README as **DotNetBoost Entity Addressing v1**, and this
+  library now runs the full rule set against itself as part of its own suite — so the version it
+  publishes is one it is held to rather than one it merely claims. Comparing the two constants is
+  all a consumer needs; there is nothing further to install.
 
 - `samples/SampleApp` maps `PUT /api/products/{id}`, so the dashboard's product page can save the
   name, SKU and price it shows. Its own columns only — a product's media is attachment rows
