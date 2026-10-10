@@ -5,7 +5,7 @@ All notable changes to DotNetBoost.Media are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0-preview.2] - 2026-10-10
 
 ### Added
 
@@ -465,6 +465,7 @@ changing which backend receives new uploads does not strand the files that came 
   502 when the storage backend is what failed.
 - Responses deliberately omit the storage provider, container and path.
 
-[Unreleased]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.1...HEAD
+[Unreleased]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.2...HEAD
+[1.0.0-preview.2]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.1...v1.0.0-preview.2
 [1.0.0-preview.1]: https://github.com/dotnetboost/media/releases/tag/v1.0.0-preview.1
 

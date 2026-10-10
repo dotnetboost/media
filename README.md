@@ -243,6 +243,10 @@ lets two tables serve every entity in the application. The price is that deletin
 cascade — call `media.For(entity).DeleteAllAsync()` when it goes, which deletes the files that
 entity alone was using and unlinks the rest, and returns the ids it deleted.
 
+To ask *before* acting — a confirmation that has to say "2 of these 5 images are used by other
+products and will stay" — `WhichAreSharedAsync(ids)` is that same sole-holder test on its own, in
+one query however many files it is handed.
+
 Nothing cascades *out* of this library either, for the same reason. If your application keeps
 records of its own about a file — per-language alt text, a search index entry, a CDN edge — register
 a handler rather than remembering the cleanup at each call site, because the REST endpoint's own
@@ -255,6 +259,60 @@ a handler rather than remembering the cleanup at each call site, because the RES
     await db.MediaAltText.Where(t => ids.Contains(t.MediaFileId)).ExecuteDeleteAsync(ct);
 })
 ```
+
+`.OnFilesDeleted<THandler>()` registers an `IMediaFilesDeletedHandler` class instead, for anything
+longer than a statement. Either form runs in the delete's own scope, so a `DbContext` resolved from
+the `IServiceProvider` passed in is the one the delete used. Handlers hear about the files that were
+**deleted** — never the ones merely detached, which are still in use and whose records must survive.
+
+---
+
+## Reading a listing
+
+`For(entity)` is one owner at a time by construction, so a page of fifty products drawn through it
+costs fifty queries — a hundred, once the files are wanted too. `ForMany` asks the same questions
+about many owners, each answered in **one** store round trip whatever the owner count:
+
+```csharp
+var products = await db.Products.OrderBy(p => p.Name).Skip(skip).Take(50).ToListAsync(ct);
+
+var heroes = await media.ForMany(products).GetByRoleAsync("primary", ct);
+
+foreach (var product in products)
+    Draw(product, heroes[product.Id.ToString(CultureInfo.InvariantCulture)]);
+```
+
+`ForMany(entities)` — or `ForMany("Product", [7, 8, 9])` if keys are what you hold — returns an
+`IMediaBulkAccessor` with the three questions a listing actually asks:
+
+| | |
+|---|---|
+| `ListWithRolesAsync()` | each owner's files with the role each holds, per link |
+| `GetByRoleAsync(role)` | each owner's file in a single-valued role, or `null` |
+| `WhichHaveAttachmentsAsync(role?)` | which of the asked-about owners have anything at all — a set of the ones that do, not an entry each |
+
+Results are keyed by the owner's formatted entity id — the same invariant string an attachment row
+stores — and in the two that return a dictionary **every id you asked about is present**: an owner
+with nothing attached maps to an empty list or to `null`, so nothing needs `GetValueOrDefault` and
+the first row without a photo does not throw. `ForMany` reads only; a role and a position belong to
+one link, so attaching, detaching and reordering stay on `For(entity)`.
+
+Filtering *before* paging is a different question — "the first 20 products that have an image" is
+not a subset of the first 20 products — so it has to be asked where both sets live. In the EF Core
+package:
+
+```csharp
+var withImage = db.OwnersWithMedia<Product>("primary");   // IQueryable<string>, not run yet
+
+var page = await db.Products.Where(p => withImage.Contains(p.Id.ToString()))
+    .OrderBy(p => p.Name).Skip(skip).Take(take).ToListAsync(ct);
+```
+
+It has not run, so it folds into your own query as a subquery rather than returning a list of ids to
+pass back in. Behind both, `IMediaStore.ListAttachmentsForOwnersAsync` returns each attachment with
+the live file it points at: **the join is the store's, not the engine's**, which is what makes the
+read one statement. A custom store that loops over the single-owner method will pass the contract
+tests and defeat the point.
 
 ---
 
@@ -324,9 +382,9 @@ stronger, and `GET /api/media/{id}/url` already does.
 |---|---|
 | [Architecture](https://github.com/dotnetboost/media/blob/main/docs/architecture.md) | The two halves, and why the ordering between them is what it is |
 | [Uploading and reading](https://github.com/dotnetboost/media/blob/main/docs/uploading-and-reading.md) | `IMediaManager` in full |
-| [Attaching media to entities](https://github.com/dotnetboost/media/blob/main/docs/attaching-to-entities.md) | `For(entity)`, roles and ordering, one file on many entities, and cleanup |
+| [Attaching media to entities](https://github.com/dotnetboost/media/blob/main/docs/attaching-to-entities.md) | `For(entity)` and `ForMany(entities)`, roles and ordering, one file on many entities, and cleanup |
 | [Storage backends](https://github.com/dotnetboost/media/blob/main/docs/storage-backends.md) | Local disk, Azure, S3 — and running several |
-| [Metadata stores](https://github.com/dotnetboost/media/blob/main/docs/metadata-stores.md) | EF Core, Dapper, MongoDB |
+| [Metadata stores](https://github.com/dotnetboost/media/blob/main/docs/metadata-stores.md) | EF Core, Dapper, MongoDB — and implementing `IMediaStore` yourself |
 | [Validation and security](https://github.com/dotnetboost/media/blob/main/docs/validation-and-security.md) | Limits, allow-lists, sniffing, path safety |
 | [REST API](https://github.com/dotnetboost/media/blob/main/docs/rest-api.md) | Every endpoint, with its status codes |
 | [Dashboard](https://github.com/dotnetboost/media/blob/main/docs/dashboard.md) | The Nuxt client in `clients/dashboard` |
@@ -345,8 +403,11 @@ dotnet run --project aspire/DotNetBoost.Media.AppHost
 ```
 
 Starts PostgreSQL in a container, the sample API beside it, and a **Nuxt dashboard** over both —
-browse the library, search it, sort it, upload, and attach files to a product from a modal that is
-the same browser as the Media page. See [docs/aspire.md](https://github.com/dotnetboost/media/blob/main/docs/aspire.md) and
+browse the library, search it, sort it, upload, and give a product its images from a page with **a
+box per role** — empty with a `+`, or holding the image with an `x` that detaches it. The picker a
+box opens is the same browser as the Media page, with the role already fixed.
+
+See [docs/aspire.md](https://github.com/dotnetboost/media/blob/main/docs/aspire.md) and
 [docs/dashboard.md](https://github.com/dotnetboost/media/blob/main/docs/dashboard.md).
 
 ---
@@ -388,7 +449,9 @@ including one that looks harmless from inside a single library. So that one equa
 the dependency: there is nothing further to install and nothing to keep in step by hand.
 
 `EntityKey.MaxLength` and `MediaEntityNames.MaxLength` are public as well, for a consumer that wants
-to compare the limits it stores keys and names under rather than trust the version alone.
+to compare the limits it stores keys and names under rather than trust the version alone. So is
+`EntityKey.IsUnset(value)`, the unset test from the table above — a provider writing its own
+`IEntityKeyAccessor` applies the rule rather than a copy of it that can drift.
 
 ## Contributing
 
