@@ -20,18 +20,21 @@
     <PackageVersion Include="Scalar.AspNetCore" Version="2.17.1" />
   </ItemGroup>
 
-  <!-- Aspire: aspire/ and samples/ only, never a shipped package. Same versions as
-       DotNetBoost.Settings and DotNetBoost.MultiLingual, so the AppHosts share one restored
-       Aspire bundle. -->
+  <!-- Aspire: aspire/ and samples/ only, never a shipped package. Same versions as the other
+       DotNetBoost repos, so the AppHosts share one restored Aspire bundle (and the local workspace
+       can build them all: one MSBuild process loads only one Aspire.AppHost.Sdk version). These
+       five and the Aspire.AppHost.Sdk version in the AppHost csproj move together.
+       13.6.2 is the floor: below it the AppHost resolves MessagePack 2.5.302 transitively, which
+       is GHSA-qhrr-8q5h-9q3h, and NuGet audit fails the restore (NU1902 as an error). -->
   <ItemGroup Label="Aspire — AppHost (orchestration)">
-    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.5.2" />
-    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.5.2" />
-    <PackageVersion Include="Aspire.Hosting.Azure.Storage" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.AppHost" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.PostgreSQL" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.Azure.Storage" Version="13.6.4" />
     <!-- Runs the Nuxt dashboard in clients/dashboard as an orchestrated resource. -->
-    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.JavaScript" Version="13.6.4" />
     <!-- Referenced only when the matching block in AppHost.cs is uncommented. -->
-    <PackageVersion Include="Aspire.Hosting.SqlServer" Version="13.5.2" />
-    <PackageVersion Include="Aspire.Hosting.MongoDB" Version="13.5.2" />
+    <PackageVersion Include="Aspire.Hosting.SqlServer" Version="13.6.4" />
+    <PackageVersion Include="Aspire.Hosting.MongoDB" Version="13.6.4" />
   </ItemGroup>
 
   <ItemGroup Label="Aspire — consumed by the sample API">
@@ -140,7 +143,13 @@
     <PackageVersion Include="Microsoft.Extensions.Options" Version="8.0.2" />
   </ItemGroup>
 
-  <ItemGroup Label="Microsoft.Extensions — net10.0" Condition="'$(_Net8)' != 'true'">
+  <!--
+    Split on IsShippedLibrary like net8.0. What a shipped library is built against becomes the
+    floor in its nuspec, so it moves only when the library needs it to. Tests, samples and the
+    AppHost take the latest patch, and must be at least 10.0.12, which Aspire.Hosting.AppHost 13.6
+    asks for, or transitive pinning turns the AppHost's restore into a downgrade (NU1109).
+  -->
+  <ItemGroup Label="Microsoft.Extensions — net10.0, shipped libraries" Condition="'$(_Net8)' != 'true' and '$(IsShippedLibrary)' == 'true'">
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.11" />
@@ -148,6 +157,16 @@
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
     <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.11" />
+  </ItemGroup>
+
+  <ItemGroup Label="Microsoft.Extensions — net10.0, tests, samples and the AppHost" Condition="'$(_Net8)' != 'true' and '$(IsShippedLibrary)' != 'true'">
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.FileProviders.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Logging" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.14" />
   </ItemGroup>
 
   <ItemGroup Label="EF Core / ASP.NET Core — net8.0" Condition="'$(_Net8)' == 'true'">
@@ -176,7 +195,7 @@
     <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <!-- The raw ADO.NET drivers, for the Dapper sample and the SQL Server integration tests.
          Same versions the EF providers above resolve, so each is restored once. -->
-    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.6" />
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="6.1.8" />
     <PackageVersion Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 </Project>
