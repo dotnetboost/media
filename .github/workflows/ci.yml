@@ -85,7 +85,7 @@ jobs:
       # JsonSummary is what the threshold check below reads; it carries the merged
       # percentages, so the check never has to pick between the net8.0 and net10.0 runs.
       - name: Generate coverage report
-        uses: danielpalme/ReportGenerator-GitHub-Action@5
+        uses: danielpalme/ReportGenerator-GitHub-Action@5f3701a41d14548c9b8e575a5c235230e515cbc0 # 5 (v5.6.0)
         with:
           reports: './test-results/**/coverage.cobertura.xml'
           targetdir: './coverage-html'
