@@ -5,6 +5,16 @@ All notable changes to DotNetBoost.Media are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **Aspire moved from 13.6.4 to 13.6.5**, for
+  [GHSA-f7vh-h5g3-7jrh](https://github.com/advisories/GHSA-f7vh-h5g3-7jrh) (CVE-2026-120006), an
+  elevation-of-privilege vulnerability in `Aspire.Hosting` and `Aspire.Hosting.AppHost` below
+  13.6.5. Only the local AppHost uses Aspire; no shipped package depends on it, so nothing
+  that consumes the library is affected. NuGet's audit fails the restore on 13.6.4, which is what
+  this unblocks.
+
 ## [1.0.0-preview.2] - 2026-10-10
 
 ### Added
