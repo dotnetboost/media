@@ -428,9 +428,28 @@ resolved from it is the one the delete used.
 | | |
 |---|---|
 | **When** | After the files are gone. A handler is given ids rather than `MediaFileInfo`s because the rows they name no longer exist. |
-| **What** | `DeleteAsync` passes the one file it deleted. `DeleteAllAsync` passes the batch it deleted — **not** the files it merely detached. A delete that found nothing notifies nobody. |
+| **What** | `DeleteAsync` passes the one file it deleted. `DeleteAllAsync` passes the batch it deleted — **not** the files it merely detached. A delete that found nothing notifies nobody. If `DeleteAllAsync` throws or is cancelled part-way, the files it had already deleted are still reported before the exception reaches you. |
+| **Cancellation** | Handlers get `CancellationToken.None`, not the delete's token. The delete has already happened, so a client disconnecting from `DELETE /api/media/{id}` must not cancel the cleanup. A handler that can hang should set a timeout of its own. |
 | **Order** | Registration order. Register several: one for alt text, one for the search index. |
-| **Failures** | Logged and swallowed. The bytes are already gone, so throwing would report a completed delete as a failure and invite a retry of something that cannot be repeated — and would stop the handlers after it from hearing about the delete at all. |
+| **Failures** | Logged and swallowed. The bytes are already gone, so throwing would report a completed delete as a failure and invite a retry of something that cannot be repeated — and would stop the handlers after it from hearing about the delete at all. The log entry (event 7004, Error) carries the handler's name and the deleted ids as `MediaIds` (the first 100, with the total as `Count`), so the cleanup can be rerun. The `dotnetboost.media.deleted_handler.failures` counter goes up too — see [Telemetry](configuration-reference.md#telemetry). Failures are not retried. |
+| **Names** | A handler class is named by its type. Name an inline one with `.OnFilesDeleted(handler, name: "alt-text")`; unnamed, it is `inline handler #N in {Class}`. The name is what the failure log, the counter and the startup line show. |
+
+At startup the library logs, at Debug, which handlers are registered, or that there are none
+(events 7101 and 7102). The list is read when `Build()` runs, so a handler registered after
+`Build()` still runs but is not listed.
+
+### Checklist for anything that stores rows about a file
+
+- Register `.OnFilesDeleted<T>()` or the inline overload, rather than cleaning up at your own
+  call sites. The REST endpoint's delete runs none of your code.
+- A handler hears about files that were **deleted**, not files that were detached from one owner
+  and are still in use. Don't clean up on detach.
+- A failed handler doesn't fail the delete and isn't retried. Pair it with a periodic sweep of your
+  own store that removes rows whose file no longer exists.
+- If you need retries, catch inside your handler and write the ids to your own outbox or retry
+  table. Media gives the handler the ids; what happens to a failure is the handler's business.
+- Refer to the files by one name — `MediaEntityNames.For(typeof(MediaFile))` or a single `const` —
+  never a string repeated at each call site.
 
 There is a window between finding a file unshared and removing its bytes in which another request
 could attach it, leaving that new link pointing at bytes that are gone. Closing it needs a lock this

@@ -105,6 +105,10 @@ public interface IMediaFilesDeletedHandler
     /// </para>
     /// </summary>
     /// <param name="mediaFileIds">The deleted files' ids.</param>
-    /// <param name="ct">Cancels the operation.</param>
+    /// <param name="ct">
+    /// <see cref="CancellationToken.None"/> when the engine calls it, not the delete's own token.
+    /// The delete has already happened, so the caller giving up must not cancel the cleanup that
+    /// belongs to it. A handler that can hang should bound itself with a timeout of its own.
+    /// </param>
     Task OnDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default);
 }

@@ -671,6 +671,30 @@ public class WriteEndpointTests
         Assert.Equal(HttpStatusCode.NotFound, after.StatusCode);
     }
 
+    /// <summary>
+    /// The path the handler exists for: the REST endpoint's delete runs no application code, so a
+    /// registered handler is the only way an application's own records about the file get cleaned.
+    /// </summary>
+    [Fact]
+    public async Task Delete_tells_the_registered_files_deleted_handlers()
+    {
+        var told = new List<Guid>();
+
+        await using var app = await TestApp.StartAsync(media => media.OnFilesDeleted((_, ids, _) =>
+        {
+            told.AddRange(ids);
+            return Task.CompletedTask;
+        }, name: "alt-text"));
+
+        var created  = await app.Client.PostAsync(new Uri("/api/media", UriKind.Relative), TestApp.Multipart(TestMedia.Png()));
+        var uploaded = (await created.Content.ReadFromJsonAsync<MediaFileResponse>())!;
+
+        var response = await app.Client.DeleteAsync(new Uri($"/api/media/{uploaded.Id}", UriKind.Relative));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal([uploaded.Id], told);
+    }
+
     [Fact]
     public async Task Delete_for_an_unknown_id_is_a_404()
     {

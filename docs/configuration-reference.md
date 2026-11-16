@@ -43,7 +43,7 @@ missing.
 | `UseKeyGenerator<T>()` | Replaces how storage paths are chosen. |
 | `UseEntityKeyAccessor<T>()` | Replaces how entity keys are read. |
 | `OnFilesDeleted<THandler>()` | Registers an `IMediaFilesDeletedHandler`, scoped. Call it more than once for several. |
-| `OnFilesDeleted((services, ids, ct) => …)` | The same, written inline. `services` is the delete's own scope. |
+| `OnFilesDeleted((services, ids, ct) => …, name)` | The same, written inline. `services` is the delete's own scope. `name` (optional) is what the failure log and counter call it. |
 
 ### Files-deleted handlers
 
@@ -63,7 +63,25 @@ remembering the cleanup at every call site. The one that gets missed otherwise i
 Raised after the files are gone, with the ids that actually went — `DeleteAllAsync` passes the
 batch it deleted and **not** the files it merely detached. Handlers run in registration order, and
 each one's exceptions are logged and swallowed: the bytes are already gone, so a throw would report
-a completed delete as a failure and stop the handlers after it.
+a completed delete as a failure and stop the handlers after it. The log entry carries the deleted
+ids, so the cleanup can be rerun. Handlers get `CancellationToken.None`, because the delete has
+already happened. See
+[attaching to entities](attaching-to-entities.md#cleaning-up-your-own-records-about-a-file) for
+the full rules.
+
+### Telemetry
+
+The engine's counters are on the meter `MediaTelemetry.MeterName` (`DotNetBoost.Media`). Nothing
+is emitted until something subscribes.
+
+```csharp
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter(MediaTelemetry.MeterName));
+```
+
+| Instrument | Tags | Meaning |
+|---|---|---|
+| `dotnetboost.media.deleted_handler.failures` | `media.handler` | A files-deleted handler threw. Should stay at zero; the ids it missed are on log event 7004. |
 
 ## Metadata stores — one of
 

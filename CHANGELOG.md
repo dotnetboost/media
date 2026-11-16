@@ -7,6 +7,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **A failed files-deleted handler now says which files it missed.** Log event 7004 carries the
+  deleted ids as `MediaIds` (the first 100, with the total as `Count`), so the cleanup can be
+  rerun. Before this it logged only a count, and the ids were lost.
+- **`dotnetboost.media.deleted_handler.failures`**, a counter tagged `media.handler`, on the new
+  `MediaTelemetry.MeterName` meter (`DotNetBoost.Media`). It should stay at zero.
+- **`OnFilesDeleted(handler, name)`** — an optional name for an inline handler, used by the
+  failure log, the counter and the startup line. Unnamed inline handlers are now
+  `inline handler #N in {Class}` instead of all reporting as `DelegateMediaFilesDeletedHandler`.
+- **A startup line listing the registered files-deleted handlers**, or saying there are none
+  (Debug, events 7101 and 7102).
+
+### Fixed
+- **Handlers are no longer cancelled by the caller's token.** They get `CancellationToken.None`:
+  the delete has already happened, so a client disconnecting from `DELETE /api/media/{id}` used to
+  cancel the cleanup and leave the handler's records stale.
+- **`DeleteAllAsync` reports the files it had already deleted when it fails part-way.** A throw or
+  cancellation mid-batch used to skip the notification for the whole batch, including files that
+  were already gone.
+
 ### Security
 - **Aspire moved from 13.6.4 to 13.6.5**, for
   [GHSA-f7vh-h5g3-7jrh](https://github.com/advisories/GHSA-f7vh-h5g3-7jrh) (CVE-2026-120006), an

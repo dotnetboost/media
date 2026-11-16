@@ -4,6 +4,7 @@ using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using DotNetBoost.Media.Core.Models;
 using DotNetBoost.Media.TestSupport;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace DotNetBoost.Media.UnitTests;
@@ -57,10 +58,14 @@ internal sealed class Harness
     /// Files-deleted handlers, in the order the container would hand them over. Empty for every
     /// test that is not about the notification.
     /// </param>
+    /// <param name="logger">Captures the engine's log, for the tests about what a failure records.</param>
+    /// <param name="metrics">The engine's counters, for the tests about the failure counter.</param>
     public static Harness Create(
         Action<MediaOptions>? configure = null,
         IMediaRoleRegistry? roles = null,
         IEnumerable<IMediaFilesDeletedHandler>? deletedHandlers = null,
+        ILogger<MediaManager>? logger = null,
+        MediaMetrics? metrics = null,
         params InMemoryStorageProvider[] extraBackends)
     {
         var options = new MediaOptions();
@@ -81,7 +86,8 @@ internal sealed class Harness
             options,
             clock,
             deletedHandlers ?? [],
-            NullLogger<MediaManager>.Instance);
+            logger ?? NullLogger<MediaManager>.Instance,
+            metrics);
 
         return new Harness(manager, store, storage, options, clock);
     }
