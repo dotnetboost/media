@@ -860,11 +860,8 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         try
         {
-            foreach (var fileId in fileIds)
+            foreach (var fileId in fileIds.Where(id => !shared.Contains(id)))
             {
-                if (shared.Contains(fileId))
-                    continue;
-
                 // Re-read rather than trust the list: another request may have deleted the file
                 // between the two, and DeleteFileAsync needs the row to find the bytes.
                 var file = await store.FindAsync(fileId, includeDeleted: false, ct).ConfigureAwait(false);

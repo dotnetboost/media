@@ -151,14 +151,13 @@ public sealed class MediaBuilder
     {
         var names = new List<string>();
 
-        foreach (var descriptor in Services)
-        {
-            // Keyed first: on the 8.0 abstractions, reading ImplementationType of a keyed descriptor
-            // throws. A keyed handler is never resolved as IEnumerable<IMediaFilesDeletedHandler>
-            // anyway, so the engine would not call it either.
-            if (descriptor.ServiceType != typeof(IMediaFilesDeletedHandler) || descriptor.IsKeyedService)
-                continue;
+        // Keyed ones skipped first: on the 8.0 abstractions, reading ImplementationType of a keyed
+        // descriptor throws. A keyed handler is never resolved as IEnumerable<IMediaFilesDeletedHandler>
+        // anyway, so the engine would not call it either.
+        var handlers = Services.Where(d => d.ServiceType == typeof(IMediaFilesDeletedHandler) && !d.IsKeyedService);
 
+        foreach (var descriptor in handlers)
+        {
             names.Add(descriptor switch
             {
                 { ImplementationType: { } type }                           => type.Name,
