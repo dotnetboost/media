@@ -8,6 +8,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Write participants: `IMediaWriteParticipant`, registered with `UseWriteParticipant<T>()`.**
+  Told about every write — `Uploaded`, `Updated`, `Attached`, `Detached`, `Reordered`, `Deleted`,
+  as a `MediaChange` carrying the file, the owner's `(entityName, entityId)`, the role and the
+  position — **before** the store saves it. What a participant enlists through the new
+  `EfCoreMediaWriteScope` is saved by the store's own `SaveChanges`, so an audit entry commits with
+  the change or not at all; a participant that throws aborts the write. Until now the only hook was
+  `IMediaFilesDeletedHandler`, which hears about deletes only, after the fact, and cannot fail them.
+- **`IEnlistingMediaStore`**, implemented by the EF Core store. `Build()` refuses a participant for
+  a store that does not implement it (Dapper, MongoDB), and so does the engine at run time.
+  `MediaBuilderGuard.EnsureStoreNotConfigured` gains a `supportsWriteParticipants` overload for
+  custom stores.
 - **A failed files-deleted handler now says which files it missed.** Log event 7004 carries the
   deleted ids as `MediaIds` (the first 100, with the total as `Count`), so the cleanup can be
   rerun. Before this it logged only a count, and the ids were lost.

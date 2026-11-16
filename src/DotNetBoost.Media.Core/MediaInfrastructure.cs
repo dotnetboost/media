@@ -22,9 +22,10 @@ public sealed class MediaBuilder
     /// <summary>The service collection being configured. Providers and backends register here.</summary>
     public IServiceCollection Services { get; }
 
-    internal bool    StoreConfigured { get; set; }
-    internal string? StoreName       { get; set; }
-    internal string? DefaultStorage  { get; set; }
+    internal bool    StoreConfigured           { get; set; }
+    internal string? StoreName                 { get; set; }
+    internal string? DefaultStorage            { get; set; }
+    internal bool    SupportsWriteParticipants { get; set; }
 
     /// <summary>
     /// The options instance handed to the engine through DI. Builder methods mutate this object
@@ -110,6 +111,8 @@ public sealed class MediaBuilder
                 "a backend is what actually holds it.");
         }
 
+        ValidateWriteParticipants();
+
         Services.AddSingleton<IMediaStorageProviderRegistry>(sp => new MediaStorageProviderRegistry(
             sp.GetServices<IMediaStorageProvider>(),
             DefaultStorage));
@@ -138,6 +141,33 @@ public sealed class MediaBuilder
             handlers, sp.GetService<ILogger<MediaDeletedHandlersReport>>()));
 
         return Services;
+    }
+
+    /// <summary>
+    /// Refuses a write participant for a store that has not declared it can commit what
+    /// participants enlist. Running them anyway would look like an audit trail and not be one —
+    /// an entry recorded for a write that then failed, or a write whose entry never saved. The
+    /// engine checks again at run time, for a participant registered outside the builder.
+    /// </summary>
+    private void ValidateWriteParticipants()
+    {
+        if (SupportsWriteParticipants)
+            return;
+
+        var participants = Services
+            .Where(d => d.ServiceType == typeof(IMediaWriteParticipant) && !d.IsKeyedService)
+            .Select(d => d.ImplementationType?.Name ?? "(registered by factory)")
+            .ToList();
+
+        if (participants.Count == 0)
+            return;
+
+        throw new InvalidOperationException(
+            $"The '{StoreName}' media store cannot commit what a write participant enlists together with " +
+            $"the write, so it does not accept participants. Registered: {string.Join(", ", participants)}. " +
+            "Use the Entity Framework Core store, or a custom store that implements IEnlistingMediaStore " +
+            "and is registered with MediaBuilderGuard.EnsureStoreNotConfigured(builder, name, " +
+            "supportsWriteParticipants: true).");
     }
 
     /// <summary>
@@ -197,9 +227,24 @@ public sealed class MediaBuilder
 /// <summary>Guards against configuring more than one metadata store on a builder.</summary>
 public static class MediaBuilderGuard
 {
-    /// <summary>Records <paramref name="storeName"/> as the builder's metadata store.</summary>
+    /// <summary>
+    /// Records <paramref name="storeName"/> as the builder's metadata store, one that does not
+    /// accept write participants.
+    /// </summary>
     /// <exception cref="InvalidOperationException">A store is already configured.</exception>
-    public static void EnsureStoreNotConfigured(MediaBuilder builder, string storeName)
+    public static void EnsureStoreNotConfigured(MediaBuilder builder, string storeName) =>
+        EnsureStoreNotConfigured(builder, storeName, supportsWriteParticipants: false);
+
+    /// <summary>Records <paramref name="storeName"/> as the builder's metadata store.</summary>
+    /// <param name="builder">The builder.</param>
+    /// <param name="storeName">The store's name, for error messages.</param>
+    /// <param name="supportsWriteParticipants">
+    /// Whether the store implements <see cref="IEnlistingMediaStore"/>, so an
+    /// <see cref="IMediaWriteParticipant"/> can enlist in its writes. <see cref="MediaBuilder.Build"/>
+    /// refuses a participant when this is <c>false</c>.
+    /// </param>
+    /// <exception cref="InvalidOperationException">A store is already configured.</exception>
+    public static void EnsureStoreNotConfigured(MediaBuilder builder, string storeName, bool supportsWriteParticipants)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(storeName);
@@ -211,8 +256,9 @@ public static class MediaBuilderGuard
                 $"Cannot also configure '{storeName}'.");
         }
 
-        builder.StoreConfigured = true;
-        builder.StoreName       = storeName;
+        builder.StoreConfigured           = true;
+        builder.StoreName                 = storeName;
+        builder.SupportsWriteParticipants = supportsWriteParticipants;
     }
 
     /// <summary>

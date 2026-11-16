@@ -28,7 +28,75 @@ public abstract class StoreContractTests : IAsyncLifetime
     /// <summary>Releases whatever <see cref="CreateStoreAsync"/> allocated.</summary>
     protected virtual Task CleanupAsync() => Task.CompletedTask;
 
+    /// <summary>
+    /// Whether this store commits what write participants enlist, and so implements
+    /// <see cref="IEnlistingMediaStore"/>. Declared rather than inferred, so a store that gains or
+    /// loses the interface by accident fails <see cref="The_store_declares_whether_it_enlists"/>.
+    /// </summary>
+    protected virtual bool Enlists => false;
+
     public async Task InitializeAsync() => Store = await CreateStoreAsync();
+
+    [Fact]
+    public void The_store_declares_whether_it_enlists() =>
+        Assert.Equal(Enlists, Store is IEnlistingMediaStore);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeleteFile_removes_every_link_and_the_row_in_one_write(bool softDelete)
+    {
+        // Only an enlisting store has the one-write delete; the others are asserted not to claim it
+        // by the test above.
+        if (Store is not IEnlistingMediaStore enlisting)
+            return;
+
+        var doomed = Row("doomed.png");
+        var kept   = Row("kept.png");
+        await Store.AddAsync(doomed);
+        await Store.AddAsync(kept);
+        await Store.AddAttachmentAsync(Link(doomed.Id, ownerId: "1"));
+        await Store.AddAttachmentAsync(Link(doomed.Id, ownerId: "2", role: "gallery"));
+        await Store.AddAttachmentAsync(Link(kept.Id, ownerId: "1", role: "gallery"));
+
+        var file = (await Store.FindAsync(doomed.Id))!;
+        if (softDelete)
+            file.DeletedAt = Origin.AddHours(1);
+
+        await enlisting.DeleteFileAsync(file, softDelete);
+
+        Assert.Empty(await Store.ListAttachmentsOfFileAsync(doomed.Id));
+        Assert.Single(await Store.ListAttachmentsOfFileAsync(kept.Id));
+        Assert.Null(await Store.FindAsync(doomed.Id));
+
+        var tombstone = await Store.FindAsync(doomed.Id, includeDeleted: true);
+        if (softDelete)
+            Assert.Equal(Origin.AddHours(1), tombstone!.DeletedAt);
+        else
+            Assert.Null(tombstone);
+
+        Assert.NotNull(await Store.FindAsync(kept.Id));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DeleteFile_of_a_row_deleted_underneath_reports_it_not_found(bool softDelete)
+    {
+        if (Store is not IEnlistingMediaStore enlisting)
+            return;
+
+        var row = Row();
+        await Store.AddAsync(row);
+
+        var file = (await Store.FindAsync(row.Id))!;
+        Assert.True(await Store.DeleteAsync(row.Id));
+
+        if (softDelete)
+            file.DeletedAt = Origin.AddHours(1);
+
+        await Assert.ThrowsAsync<MediaNotFoundException>(() => enlisting.DeleteFileAsync(file, softDelete));
+    }
 
     public Task DisposeAsync() => CleanupAsync();
 

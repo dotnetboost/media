@@ -126,6 +126,12 @@ public class MediaFile
 
     /// <summary>True while the file has not been deleted.</summary>
     public bool IsDeleted => DeletedAt is not null;
+
+    /// <summary>
+    /// A detached copy, for the engine to work out what an edit will produce before it touches the
+    /// row the store is tracking.
+    /// </summary>
+    internal MediaFile Copy() => (MediaFile)MemberwiseClone();
 }
 
 /// <summary>

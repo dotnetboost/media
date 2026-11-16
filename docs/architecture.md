@@ -83,6 +83,14 @@ every call site — including the REST endpoint's own `DELETE`, which runs no ap
 all. Handlers are told after the fact, in registration order, and their failures are logged and
 swallowed: the bytes are already gone, so a throw could only misreport a completed delete.
 
+`IMediaWriteParticipant` is the hook on the other side of the commit. It is told about every write
+— upload, edit, attach, detach, reorder, delete — **before** the store saves it, and what it
+enlists rides the store's own save. That is what lets an audit entry commit with the change it
+describes, and why a participant's throw aborts the write rather than being swallowed. Only a store
+that shares a unit of work with the application can promise that, so only the EF Core store
+(`IEnlistingMediaStore`) accepts participants, and its delete removes a file's links and row in one
+`SaveChanges` so the record of a delete is all-or-nothing too.
+
 ## Why the bytes are written first
 
 An upload is two writes that cannot be one transaction — a blob store and a database do not share

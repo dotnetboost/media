@@ -458,6 +458,68 @@ your transaction. The window is small, `OpenReadAsync` reports the outcome hones
 `MediaContentMissingException`, and it is the same trade the engine already makes writing bytes
 before rows. See [limitations](limitations.md).
 
+## Recording each change as it commits: write participants
+
+A files-deleted handler is told **after** a delete and cannot fail it, which is right for cleanup
+and wrong for an audit trail: an audit entry has to commit with the change it describes, or not at
+all. A write participant is the other hook. It is told about every write **before** the store
+saves it, and what it enlists is saved in the same transaction:
+
+```csharp
+services.AddMedia()
+    .UseEntityFrameworkCore<AppDbContext>()
+    .UseFileSystem("./uploads")
+    .UseWriteParticipant<MediaAuditParticipant>()
+    .Build();
+
+public sealed class MediaAuditParticipant(EfCoreMediaWriteScope scope) : IMediaWriteParticipant
+{
+    public Task OnWritingAsync(MediaChange change, CancellationToken ct)
+    {
+        // Enlist, never save: the media store's own SaveChanges carries this with its rows.
+        scope.Add(new MyAuditRow(change.Kind, change.MediaFileId, change.Owner, change.Role));
+        return Task.CompletedTask;
+    }
+}
+```
+
+Each change is one `MediaChange`:
+
+| Kind | When | Set |
+|---|---|---|
+| `Uploaded` | A new file's row is recorded (the bytes are already stored). | `File` |
+| `Updated` | Name, category, tags or metadata change. | `File` (after), `Previous` (before) |
+| `Attached` | A file is linked to an entity. | `File`, `Owner`, `Role`, `SortOrder` |
+| `Detached` | A link is removed — by a detach, a role replacement, `DetachAllAsync`, `DeleteAllAsync` or a delete. | `File`, `Owner`, `Role`, `PreviousSortOrder` |
+| `Reordered` | A file moves within a role. Only the files that moved. | `File`, `Owner`, `Role`, `SortOrder`, `PreviousSortOrder` |
+| `Deleted` | A file is deleted. Its remaining links are reported first, as `Detached`. | `File` (as it was), `SoftDeleted` |
+
+`Owner` is the entity's `(entityName, entityId)` — the same address every DotNetBoost library
+uses — so an attach can be recorded against the product it was attached to, not just the file.
+`File` is read before the write, so a delete can still name what it deleted; it is `null` only for a
+link whose file row no longer exists.
+
+| | |
+|---|---|
+| **When** | Before the store writes, inside the operation. A delete calls participants before it touches the bytes. |
+| **Failures** | **A throw aborts the write.** Nothing is written, what participants enlisted is discarded, and the exception reaches the caller. A refused upload's bytes are removed again; a refused delete leaves the file, its bytes and its links as they were. |
+| **One call per change** | An operation making several changes calls each participant once per change, in order, and they share a `CorrelationId` — the ambient `Activity` id when there is one. |
+| **No-ops** | Attaching a file already attached, detaching one that is not, a reorder that moves nothing: no participant is called. A deduplicated upload writes no row, so it is not an `Uploaded` change; the attach that follows it still is. |
+| **Order** | Registration order. The first participant to throw stops the rest. |
+| **Stores** | Only a store that implements `IEnlistingMediaStore` accepts participants. Of the shipped stores, Entity Framework Core does. `Build()` refuses a participant on Dapper or MongoDB, and the engine refuses one at run time if it was registered outside the builder. |
+
+**Enlist through `EfCoreMediaWriteScope`, never save.** It wraps the context the media store saves,
+so an entity added there goes out with the media rows. If the write does not commit, everything
+added is detached again, so your next unrelated `SaveChangesAsync` cannot save it. Only the entity
+passed to `Add` is detached — enlist each entity of a graph, not just its root.
+
+**Some operations are several writes.** Replacing a single-valued role is a detach and then an
+attach; `DeleteAllAsync` is a detach and then a delete per file; uploading to an entity is an
+upload and then an attach. Each change commits with its own write, so a failure part-way leaves the
+earlier steps — and their records — committed, exactly as the media rows are. A single delete is
+**one** write on the EF Core store: its links, its row and every change enlisted for it commit
+together.
+
 ## Composite keys
 
 An attachment row records one key, so a composite primary key needs a decision from you: either

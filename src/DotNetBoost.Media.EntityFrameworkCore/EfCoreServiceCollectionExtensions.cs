@@ -28,16 +28,24 @@ namespace Microsoft.Extensions.DependencyInjection
         /// belongs to can be saved together — take an explicit transaction on the context, upload,
         /// save your entity, commit.
         /// </para>
+        /// <para>
+        /// Accepts <see cref="IMediaWriteParticipant"/>s: it registers
+        /// <see cref="EfCoreMediaWriteScope"/> over the same context, for them to enlist in.
+        /// </para>
         /// </summary>
         public static MediaBuilder UseEntityFrameworkCore<TContext>(this MediaBuilder builder)
             where TContext : DbContext
         {
             ArgumentNullException.ThrowIfNull(builder);
-            MediaBuilderGuard.EnsureStoreNotConfigured(builder, "EntityFrameworkCore");
+            MediaBuilderGuard.EnsureStoreNotConfigured(builder, "EntityFrameworkCore", supportsWriteParticipants: true);
 
             var services = builder.Services;
 
-            services.AddScoped<IMediaStore>(sp => new EfCoreMediaStore(sp.GetRequiredService<TContext>()));
+            // The scope and the store wrap the same scoped TContext instance, which is the whole
+            // guarantee a participant relies on: what it enlists is saved by the store.
+            services.AddScoped(sp => new EfCoreMediaWriteScope(sp.GetRequiredService<TContext>()));
+            services.AddScoped<IMediaStore>(sp => new EfCoreMediaStore(
+                sp.GetRequiredService<TContext>(), sp.GetRequiredService<EfCoreMediaWriteScope>()));
 
             // The model knows more about keys than the convention accessor can work out, so it
             // replaces it rather than merely being registered alongside.

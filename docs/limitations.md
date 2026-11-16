@@ -190,6 +190,27 @@ before rows.
 If it matters for your data, do the delete when the entity is already unreachable — which is
 normally exactly when you call it.
 
+## Write participants need the EF Core store
+
+A write participant is only worth having if what it enlists commits with the write, and only the
+Entity Framework Core store shares a unit of work with the application. The Dapper store saves
+each statement on the connection it is given, and the MongoDB store has no session to hand out, so
+neither implements `IEnlistingMediaStore` and `Build()` refuses a participant for them rather than
+run one with no atomicity. With those stores, record changes yourself around the calls you make —
+and note that the REST endpoints' writes run none of your code.
+
+## Some writes are several commits
+
+Replacing a single-valued role is a detach and then an attach; `DeleteAllAsync` is a detach and
+then one delete per file; uploading to an entity is an upload and then an attach. Each step is its
+own store write, and a participant's record of each step commits with that step. A failure
+part-way therefore leaves the earlier steps, and their records, committed — the records stay true
+to the rows, but the operation is not all-or-nothing. A single delete is one write on the EF Core
+store. Wrap the call in a transaction on your context if you need the whole operation atomic.
+
+`DetachAllAsync` with a participant registered lists an entity's links and then removes them, in
+two statements. A link added in between is removed without being reported.
+
 ## A file's attachments have no metadata of their own
 
 An attachment carries an owner, a role and a position, and nothing else. Per-link alt text, a

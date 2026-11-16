@@ -374,6 +374,30 @@ namespace Microsoft.Extensions.DependencyInjection
             builder.NameInlineHandler(factory, displayName);
             return builder;
         }
+
+        /// <summary>
+        /// Registers a participant called inside every write to the media tables — upload, edit,
+        /// attach, detach, reorder, delete — before the store saves it, to enlist work that must
+        /// commit with the write. An audit entry is the reason it exists.
+        /// <code>
+        /// .UseEntityFrameworkCore&lt;AppDbContext&gt;()
+        /// .UseWriteParticipant&lt;MediaAuditParticipant&gt;()
+        /// </code>
+        /// <para>
+        /// Scoped, like the engine. Unlike a files-deleted handler, a participant that throws
+        /// aborts the write — see <see cref="IMediaWriteParticipant"/>. Only a store that can
+        /// commit what participants enlist accepts them; <c>Build()</c> refuses one otherwise.
+        /// </para>
+        /// </summary>
+        public static MediaBuilder UseWriteParticipant<TParticipant>(this MediaBuilder builder)
+            where TParticipant : class, IMediaWriteParticipant
+        {
+            ArgumentNullException.ThrowIfNull(builder);
+
+            // Add, not TryAdd: participants compose, and TryAdd would silently keep only the first.
+            builder.Services.AddScoped<IMediaWriteParticipant, TParticipant>();
+            return builder;
+        }
     }
 
     /// <summary>Running the media configuration checks on demand.</summary>

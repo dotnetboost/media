@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Models;
@@ -20,7 +21,8 @@ internal sealed partial class MediaManager(
     TimeProvider timeProvider,
     IEnumerable<IMediaFilesDeletedHandler> deletedHandlers,
     ILogger<MediaManager> logger,
-    MediaMetrics? metrics = null) : IMediaManager
+    MediaMetrics? metrics = null,
+    IEnumerable<IMediaWriteParticipant>? participants = null) : IMediaManager
 {
     /// <summary>
     /// How many of a failed notification's ids go on its log entry. Enough to rerun the cleanup by
@@ -36,6 +38,16 @@ internal sealed partial class MediaManager(
     // which is the order the container yields them in.
     private readonly IMediaFilesDeletedHandler[] _deletedHandlers = [.. deletedHandlers];
 
+    // Same reasoning as the handlers: the contract promises registration order.
+    private readonly IMediaWriteParticipant[] _participants = [.. participants ?? []];
+
+    /// <summary>
+    /// Whether anyone is listening before a write. Every read made only to describe a change to a
+    /// participant — the links a delete is about to remove, a detached file's name — is skipped
+    /// when this is false, so an application without participants pays nothing for them.
+    /// </summary>
+    internal bool HasParticipants => _participants.Length > 0;
+
     /// <summary>The engine's clock, for the accessor that writes attachment rows beside it.</summary>
     internal DateTime Now => timeProvider.GetUtcNow().UtcDateTime;
 
@@ -48,7 +60,11 @@ internal sealed partial class MediaManager(
     private readonly ILogger<MediaManager> _logger = logger;
 
     /// <inheritdoc/>
-    public async Task<MediaFileInfo> UploadAsync(MediaUpload upload, CancellationToken ct = default)
+    public Task<MediaFileInfo> UploadAsync(MediaUpload upload, CancellationToken ct = default) =>
+        UploadAsync(upload, NewCorrelationId(), ct);
+
+    /// <summary>The upload, with the correlation id of the operation it is part of.</summary>
+    internal async Task<MediaFileInfo> UploadAsync(MediaUpload upload, string correlationId, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(upload);
         ArgumentNullException.ThrowIfNull(upload.Content);
@@ -127,15 +143,27 @@ internal sealed partial class MediaManager(
             CreatedAt        = timeProvider.GetUtcNow().UtcDateTime
         };
 
+        IReadOnlyList<MediaChange> changes = HasParticipants
+            ? [new MediaChange
+              {
+                  Kind          = MediaChangeKind.Uploaded,
+                  MediaFileId   = id,
+                  File          = MediaFileInfo.From(file),
+                  CorrelationId = correlationId,
+                  OccurredAt    = file.CreatedAt
+              }]
+            : [];
+
         try
         {
-            await store.AddAsync(file, ct).ConfigureAwait(false);
+            await WriteAsync(changes, () => store.AddAsync(file, ct), ct).ConfigureAwait(false);
         }
         catch
         {
             // The bytes are written but the row is not, so nothing can ever find them. Remove
             // them rather than leave an object no part of the system knows about. Best-effort:
-            // the original failure is what the caller needs to hear about.
+            // the original failure is what the caller needs to hear about. A participant that
+            // refused the upload lands here too, and for the same reason.
             await TryRemoveAsync(provider, stored.Container, stored.Path, id).ConfigureAwait(false);
             throw;
         }
@@ -189,25 +217,53 @@ internal sealed partial class MediaManager(
         ArgumentNullException.ThrowIfNull(update);
 
         var file = await RequireAsync(id, ct).ConfigureAwait(false);
+        var now  = Now;
 
-        if (update.FileName is not null)
-            file.FileName = _validator.ValidateName(update.FileName);
+        // Worked out on a copy first. The row is usually tracked by the store, so editing it
+        // before a participant has agreed would leave it modified when one refuses — and the
+        // application's next save would write the edit that was just refused. Validation runs
+        // here too, so a bad name fails before any participant hears about it.
+        var edited = file.Copy();
+        Apply(edited, update, now);
+
+        IReadOnlyList<MediaChange> changes = HasParticipants
+            ? [new MediaChange
+              {
+                  Kind          = MediaChangeKind.Updated,
+                  MediaFileId   = id,
+                  File          = MediaFileInfo.From(edited),
+                  Previous      = MediaFileInfo.From(file),
+                  CorrelationId = NewCorrelationId(),
+                  OccurredAt    = now
+              }]
+            : [];
+
+        await WriteAsync(changes, () =>
+        {
+            Apply(file, update, now);
+            return store.UpdateAsync(file, ct);
+        }, ct).ConfigureAwait(false);
+
+        return MediaFileInfo.From(file);
+    }
+
+    /// <summary>Applies an edit to a row. Throws on a bad name, before anything is changed.</summary>
+    private void Apply(MediaFile file, MediaUpdate update, DateTime now)
+    {
+        // Validated into locals first, so a refusal leaves the row exactly as it was.
+        var fileName = update.FileName is null ? file.FileName : _validator.ValidateName(update.FileName);
 
         // An empty string is how a caller says "no category", and Normalize turns it into the NULL
         // the column wants. The stored bytes do not move: the path was fixed at upload.
-        if (update.Category is not null)
-            file.Category = MediaCategories.Normalize(update.Category);
+        var category = update.Category is null ? file.Category : MediaCategories.Normalize(update.Category);
+        var tags     = update.Tags is null ? file.Tags : MediaValidator.ValidateAnnotations(update.Tags, null).Tags;
+        var metadata = update.Metadata is null ? file.Metadata : MediaValidator.ValidateAnnotations(null, update.Metadata).Metadata;
 
-        if (update.Tags is not null)
-            file.Tags = MediaValidator.ValidateAnnotations(update.Tags, null).Tags;
-
-        if (update.Metadata is not null)
-            file.Metadata = MediaValidator.ValidateAnnotations(null, update.Metadata).Metadata;
-
-        file.UpdatedAt = timeProvider.GetUtcNow().UtcDateTime;
-
-        await store.UpdateAsync(file, ct).ConfigureAwait(false);
-        return MediaFileInfo.From(file);
+        file.FileName  = fileName;
+        file.Category  = category;
+        file.Tags      = tags;
+        file.Metadata  = metadata;
+        file.UpdatedAt = now;
     }
 
     /// <inheritdoc/>
@@ -217,7 +273,16 @@ internal sealed partial class MediaManager(
         if (file is null)
             return false;
 
-        await DeleteFileAsync(file, ct).ConfigureAwait(false);
+        try
+        {
+            await DeleteFileAsync(file, NewCorrelationId(), ct).ConfigureAwait(false);
+        }
+        catch (MediaNotFoundException)
+        {
+            // A concurrent delete got there between the read above and the write: the file is gone,
+            // just not by this call, and it is that call's to announce.
+            return false;
+        }
 
         // Announced only on the path that actually deleted something: a delete of an id that was
         // already gone tells a handler nothing it can act on, and would have it clearing records
@@ -247,11 +312,17 @@ internal sealed partial class MediaManager(
         // link, so trusting it would work — and would also let a caller that muddled two ids remove a
         // link belonging to a file it never named.
         var links = await store.ListAttachmentsOfFileAsync(mediaFileId, ct).ConfigureAwait(false);
+        var link  = links.FirstOrDefault(l => l.Id == attachmentId);
 
-        if (!links.Any(link => link.Id == attachmentId))
+        if (link is null)
             return false;
 
-        return await store.RemoveAttachmentAsync(attachmentId, ct).ConfigureAwait(false);
+        IReadOnlyList<MediaChange> changes = HasParticipants
+            ? [Detached(await SnapshotAsync(mediaFileId, ct).ConfigureAwait(false), link, NewCorrelationId())]
+            : [];
+
+        return await WriteAsync(changes, () => store.RemoveAttachmentAsync(attachmentId, ct), ct)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -437,38 +508,204 @@ internal sealed partial class MediaManager(
     }
 
     /// <summary>Removes one file's bytes and then its row, honouring <c>SoftDelete</c>.</summary>
-    internal async Task DeleteFileAsync(MediaFile file, CancellationToken ct)
+    /// <exception cref="MediaNotFoundException">
+    /// The row went between the caller reading it and this writing it — reported by a store that
+    /// deletes in one write, which notices.
+    /// </exception>
+    internal async Task DeleteFileAsync(MediaFile file, string correlationId, CancellationToken ct)
     {
-        // Bytes first. The other order leaves an object nothing points at if the second step
-        // fails; this order leaves a row whose bytes are gone, which OpenReadAsync reports
-        // honestly and a retry of the delete completes.
-        var provider = storage.Find(file.StorageProvider);
+        // Participants before the bytes, not after. A participant that refuses has to find the
+        // file intact, or its refusal would leave a row whose bytes are already gone.
+        IReadOnlyList<MediaChange> changes = HasParticipants
+            ? await DescribeDeleteAsync(file, correlationId, ct).ConfigureAwait(false)
+            : [];
 
-        if (provider is not null)
-        {
-            await TryRemoveAsync(provider, file.StorageContainer, MediaPaths.Validate(file.StoragePath), file.Id)
-                .ConfigureAwait(false);
-        }
-        else
-        {
-            LogUnknownBackendOnDelete(file.Id, file.StorageProvider);
-        }
+        await RunParticipantsAsync(changes, ct).ConfigureAwait(false);
 
-        // The links go whether the row is tombstoned or removed. They carry no information of their
-        // own — a soft-deleted file that still read as attached to a live product would be a lie the
-        // "record that the file existed" is not worth telling.
-        await store.RemoveAttachmentsOfFileAsync(file.Id, ct).ConfigureAwait(false);
+        try
+        {
+            // Bytes first. The other order leaves an object nothing points at if the second step
+            // fails; this order leaves a row whose bytes are gone, which OpenReadAsync reports
+            // honestly and a retry of the delete completes.
+            var provider = storage.Find(file.StorageProvider);
 
-        if (options.SoftDelete)
-        {
-            file.DeletedAt = timeProvider.GetUtcNow().UtcDateTime;
-            await store.UpdateAsync(file, ct).ConfigureAwait(false);
+            if (provider is not null)
+            {
+                await TryRemoveAsync(provider, file.StorageContainer, MediaPaths.Validate(file.StoragePath), file.Id)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                LogUnknownBackendOnDelete(file.Id, file.StorageProvider);
+            }
+
+            // The links go whether the row is tombstoned or removed. They carry no information of
+            // their own — a soft-deleted file that still read as attached to a live product would be
+            // a lie the "record that the file existed" is not worth telling.
+            if (options.SoftDelete)
+                file.DeletedAt = Now;
+
+            if (store is IEnlistingMediaStore enlisting)
+            {
+                // Links and row in one write, so what participants enlisted commits with both.
+                await enlisting.DeleteFileAsync(file, options.SoftDelete, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                await store.RemoveAttachmentsOfFileAsync(file.Id, ct).ConfigureAwait(false);
+
+                if (options.SoftDelete)
+                    await store.UpdateAsync(file, ct).ConfigureAwait(false);
+                else
+                    await store.DeleteAsync(file.Id, ct).ConfigureAwait(false);
+            }
         }
-        else
+        finally
         {
-            await store.DeleteAsync(file.Id, ct).ConfigureAwait(false);
+            DiscardEnlisted();
         }
     }
+
+    /// <summary>
+    /// What deleting <paramref name="file"/> does, as participants are told it: a detach for every
+    /// link it still has, then the delete itself.
+    /// </summary>
+    private async Task<IReadOnlyList<MediaChange>> DescribeDeleteAsync(
+        MediaFile file, string correlationId, CancellationToken ct)
+    {
+        var info  = MediaFileInfo.From(file);
+        var links = await store.ListAttachmentsOfFileAsync(file.Id, ct).ConfigureAwait(false);
+
+        return
+        [
+            .. links.Select(link => Detached(info, link, correlationId)),
+            new MediaChange
+            {
+                Kind          = MediaChangeKind.Deleted,
+                MediaFileId   = file.Id,
+                File          = info,
+                SoftDeleted   = options.SoftDelete,
+                CorrelationId = correlationId,
+                OccurredAt    = Now
+            }
+        ];
+    }
+
+    /// <summary>A link about to be removed, as participants are told it.</summary>
+    internal MediaChange Detached(MediaFileInfo? file, MediaAttachment link, string correlationId) => new()
+    {
+        Kind              = MediaChangeKind.Detached,
+        MediaFileId       = link.MediaFileId,
+        File              = file,
+        Owner             = new MediaOwner(link.OwnerEntityName, link.OwnerEntityId),
+        Role              = link.Role,
+        PreviousSortOrder = link.SortOrder,
+        CorrelationId     = correlationId,
+        OccurredAt        = Now
+    };
+
+    /// <summary>
+    /// The file as it is now, deleted or not, for describing a change to a participant. <c>null</c>
+    /// only when the row is gone altogether.
+    /// </summary>
+    internal async Task<MediaFileInfo?> SnapshotAsync(Guid id, CancellationToken ct)
+    {
+        var file = await store.FindAsync(id, includeDeleted: true, ct).ConfigureAwait(false);
+        return file is null ? null : MediaFileInfo.From(file);
+    }
+
+    /// <summary><see cref="SnapshotAsync"/> for several files, each read once.</summary>
+    internal async Task<Dictionary<Guid, MediaFileInfo?>> SnapshotsAsync(IEnumerable<Guid> ids, CancellationToken ct)
+    {
+        var snapshots = new Dictionary<Guid, MediaFileInfo?>();
+
+        foreach (var id in ids)
+        {
+            if (!snapshots.ContainsKey(id))
+                snapshots[id] = await SnapshotAsync(id, ct).ConfigureAwait(false);
+        }
+
+        return snapshots;
+    }
+
+    /// <summary>
+    /// One id for every change one call makes. The ambient <see cref="Activity"/>'s when there is
+    /// one, so the changes join the surrounding trace rather than being correlatable only with
+    /// each other.
+    /// </summary>
+    internal static string NewCorrelationId() => Activity.Current?.Id ?? Guid.NewGuid().ToString("n");
+
+    /// <summary>
+    /// Runs the participants for <paramref name="changes"/>, then the store write that commits
+    /// them. What participants enlisted is discarded afterwards whatever happened: a store that
+    /// committed it has already let it go, so what is left belongs to a write that did not commit —
+    /// a participant threw, the store threw, or the store found nothing to write.
+    /// </summary>
+    internal async Task<T> WriteAsync<T>(IReadOnlyList<MediaChange> changes, Func<Task<T>> write, CancellationToken ct)
+    {
+        await RunParticipantsAsync(changes, ct).ConfigureAwait(false);
+
+        try
+        {
+            // Invoked inside the try, so a store that throws before returning its task is handled
+            // the same as one whose task faults.
+            return await write().ConfigureAwait(false);
+        }
+        finally
+        {
+            DiscardEnlisted();
+        }
+    }
+
+    /// <inheritdoc cref="WriteAsync{T}"/>
+    internal Task WriteAsync(IReadOnlyList<MediaChange> changes, Func<Task> write, CancellationToken ct) =>
+        WriteAsync(changes, async () =>
+        {
+            await write().ConfigureAwait(false);
+            return true;
+        }, ct);
+
+    /// <summary>
+    /// Runs every <see cref="IMediaWriteParticipant"/> for every change, before the store is called.
+    /// <para>
+    /// Not wrapped, unlike the files-deleted handlers: a participant's exception is the write's
+    /// exception, so the store is never called. What earlier participants enlisted is discarded
+    /// first, or it would stay in the store's unit of work and be saved by whatever saves it next.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// A participant is registered and the store cannot commit what it enlists. Checked here as
+    /// well as in <c>Build()</c>, which does not see registrations made outside the builder.
+    /// </exception>
+    private async Task RunParticipantsAsync(IReadOnlyList<MediaChange> changes, CancellationToken ct)
+    {
+        if (changes.Count == 0 || _participants.Length == 0)
+            return;
+
+        if (store is not IEnlistingMediaStore)
+        {
+            throw new InvalidOperationException(
+                $"A media write participant ({_participants[0].GetType().Name}) is registered, but the media " +
+                $"store ({store.GetType().Name}) cannot commit what it enlists together with the write. " +
+                "Nothing was written.");
+        }
+
+        try
+        {
+            foreach (var change in changes)
+            {
+                foreach (var participant in _participants)
+                    await participant.OnWritingAsync(change, ct).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            DiscardEnlisted();
+            throw;
+        }
+    }
+
+    private void DiscardEnlisted() => (store as IEnlistingMediaStore)?.DiscardEnlisted();
 
     /// <summary>
     /// Tells every registered <see cref="IMediaFilesDeletedHandler"/> what went, in registration
@@ -613,9 +850,13 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         // This is also what makes deduplication behave. The upload may return a file that already
         // existed, and attaching it is then exactly right. While a file carried its own single
         // owner, the deduplicated upload had nowhere to put this entity and silently dropped it.
-        var file = await manager.UploadAsync(upload, ct).ConfigureAwait(false);
+        //
+        // One correlation id across both, so a participant can tell the upload and the attach
+        // apart from two unrelated calls.
+        var correlationId = MediaManager.NewCorrelationId();
+        var file          = await manager.UploadAsync(upload, correlationId, ct).ConfigureAwait(false);
 
-        return await AddAsync(file.Id, upload.Role, ct).ConfigureAwait(false);
+        return await AddAsync(file.Id, upload.Role, correlationId, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -707,7 +948,10 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     }
 
     /// <inheritdoc/>
-    public async Task<MediaFileInfo> AddAsync(Guid id, string? role = null, CancellationToken ct = default)
+    public Task<MediaFileInfo> AddAsync(Guid id, string? role = null, CancellationToken ct = default) =>
+        AddAsync(id, role, MediaManager.NewCorrelationId(), ct);
+
+    private async Task<MediaFileInfo> AddAsync(Guid id, string? role, string correlationId, CancellationToken ct)
     {
         var normalized = MediaRoles.Normalize(role);
         var declared   = Declared(normalized);
@@ -733,7 +977,7 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 $"as [MediaRole(\"{normalized}\", Multiple = true)].");
         }
 
-        await AttachAsync(id, normalized, Next(existing), ct).ConfigureAwait(false);
+        await AttachAsync(file, normalized, Next(existing), correlationId, ct).ConfigureAwait(false);
         return file;
     }
 
@@ -760,15 +1004,22 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         if (holders.Count == 1 && holders[0].MediaFileId == id)
             return file;
 
+        var correlationId = MediaManager.NewCorrelationId();
+
         // One statement rather than one per holder. A single-valued role normally has exactly one
         // to displace, but the role filter already exists and removing them one at a time would
         // leave a window in which the role had some of its old holders and none of its new one.
         if (holders.Count > 0)
-            await store.RemoveAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
+        {
+            var changes = await DescribeDetachAsync(holders, correlationId, ct).ConfigureAwait(false);
+
+            await manager.WriteAsync(changes, () => store.RemoveAttachmentsAsync(owner, normalized, ct), ct)
+                .ConfigureAwait(false);
+        }
 
         // Position zero: a role that holds one file has no ordering to preserve, and leaving the
         // displaced file's index behind would start the next gallery at 4.
-        await AttachAsync(id, normalized, sortOrder: 0, ct).ConfigureAwait(false);
+        await AttachAsync(file, normalized, sortOrder: 0, correlationId, ct).ConfigureAwait(false);
         return file;
     }
 
@@ -792,27 +1043,58 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 "A partial order has no meaning — the files left out would have no defined position.");
         }
 
-        var moved = new List<MediaAttachment>(idsInOrder.Count);
+        // Worked out before anything is changed. The rows are usually tracked by the store, so
+        // moving them before a participant has agreed would leave them moved when one refuses, for
+        // the application's next save to write.
+        var moves = new List<(MediaAttachment Attachment, int To)>(idsInOrder.Count);
 
         for (var i = 0; i < idsInOrder.Count; i++)
         {
             var attachment = byFile[idsInOrder[i]];
 
-            if (attachment.SortOrder == i)
-                continue;
-
-            attachment.SortOrder = i;
-            moved.Add(attachment);
+            if (attachment.SortOrder != i)
+                moves.Add((attachment, i));
         }
 
-        if (moved.Count == 0)
+        if (moves.Count == 0)
             return;
+
+        IReadOnlyList<MediaChange> changes = [];
+
+        if (manager.HasParticipants)
+        {
+            var correlationId = MediaManager.NewCorrelationId();
+            var files         = await manager.SnapshotsAsync(moves.Select(m => m.Attachment.MediaFileId), ct)
+                                             .ConfigureAwait(false);
+
+            changes =
+            [
+                .. moves.Select(m => new MediaChange
+                {
+                    Kind              = MediaChangeKind.Reordered,
+                    MediaFileId       = m.Attachment.MediaFileId,
+                    File              = files[m.Attachment.MediaFileId],
+                    Owner             = owner,
+                    Role              = normalized,
+                    SortOrder         = m.To,
+                    PreviousSortOrder = m.Attachment.SortOrder,
+                    CorrelationId     = correlationId,
+                    OccurredAt        = manager.Now
+                })
+            ];
+        }
 
         // One call for the whole gallery. Saved row by row this would be one round trip per image
         // — and one commit per image, so a failure halfway would leave the gallery in an order the
         // user never chose and cannot describe. The rows that did not move are left out: they are
         // already where they belong, and writing them would only widen what a failure can spoil.
-        await store.UpdateAttachmentsAsync(moved, ct).ConfigureAwait(false);
+        await manager.WriteAsync(changes, () =>
+        {
+            foreach (var (attachment, to) in moves)
+                attachment.SortOrder = to;
+
+            return store.UpdateAttachmentsAsync([.. moves.Select(m => m.Attachment)], ct);
+        }, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc/>
@@ -823,17 +1105,47 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         var normalized = role is null ? null : MediaRoles.Normalize(role);
         var attached   = await store.ListAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
 
-        var removed = false;
+        var links = attached.Where(a => a.MediaFileId == id).ToList();
 
-        foreach (var attachment in attached.Where(a => a.MediaFileId == id))
-            removed |= await store.RemoveAttachmentAsync(attachment.Id, ct).ConfigureAwait(false);
+        if (links.Count == 0)
+            return false;
+
+        // The participant's description of the file reads it whether or not it is deleted, for the
+        // same reason this does no lookup of its own.
+        var correlationId = MediaManager.NewCorrelationId();
+        var file          = manager.HasParticipants ? await manager.SnapshotAsync(id, ct).ConfigureAwait(false) : null;
+        var removed       = false;
+
+        foreach (var link in links)
+        {
+            IReadOnlyList<MediaChange> changes = manager.HasParticipants
+                ? [manager.Detached(file, link, correlationId)]
+                : [];
+
+            removed |= await manager.WriteAsync(changes, () => store.RemoveAttachmentAsync(link.Id, ct), ct)
+                .ConfigureAwait(false);
+        }
 
         return removed;
     }
 
     /// <inheritdoc/>
-    public async Task<int> DetachAllAsync(CancellationToken ct = default) =>
-        await store.RemoveAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
+    public async Task<int> DetachAllAsync(CancellationToken ct = default)
+    {
+        if (!manager.HasParticipants)
+            return await store.RemoveAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
+
+        // Read first only when somebody is going to be told what went.
+        var attached = await store.ListAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
+
+        if (attached.Count == 0)
+            return 0;
+
+        var changes = await DescribeDetachAsync(attached, MediaManager.NewCorrelationId(), ct).ConfigureAwait(false);
+
+        return await manager.WriteAsync(changes, () => store.RemoveAttachmentsAsync(owner, role: null, ct), ct)
+            .ConfigureAwait(false);
+    }
 
     /// <inheritdoc/>
     public async Task<IReadOnlyList<Guid>> DeleteAllAsync(CancellationToken ct = default)
@@ -852,9 +1164,14 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
         // not change it — but reading it first keeps that independence obvious.
         var shared = await store.FindSharedAsync(fileIds, owner, ct).ConfigureAwait(false);
 
+        // One id for the detaches and every delete that follows: it is one call.
+        var correlationId = MediaManager.NewCorrelationId();
+        var detaches      = await DescribeDetachAsync(attached, correlationId, ct).ConfigureAwait(false);
+
         // This entity's links go either way: the ones on shared files are the detach, and the ones
         // on sole-held files would be cascaded by the delete anyway.
-        await store.RemoveAttachmentsAsync(owner, role: null, ct).ConfigureAwait(false);
+        await manager.WriteAsync(detaches, () => store.RemoveAttachmentsAsync(owner, role: null, ct), ct)
+            .ConfigureAwait(false);
 
         var deleted = new List<Guid>(fileIds.Length);
 
@@ -868,7 +1185,17 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 if (file is null)
                     continue;
 
-                await manager.DeleteFileAsync(file, ct).ConfigureAwait(false);
+                try
+                {
+                    await manager.DeleteFileAsync(file, correlationId, ct).ConfigureAwait(false);
+                }
+                catch (MediaNotFoundException)
+                {
+                    // The same race as the re-read above, lost after it: somebody else's delete,
+                    // and theirs to report.
+                    continue;
+                }
+
                 deleted.Add(file.Id);
             }
         }
@@ -923,18 +1250,51 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
     }
 
     /// <summary>Writes one link, with the id and timestamp the engine assigns.</summary>
-    private async Task AttachAsync(Guid fileId, string role, int sortOrder, CancellationToken ct) =>
-        await store.AddAttachmentAsync(
-            new MediaAttachment
-            {
-                Id              = Guid.NewGuid(),
-                MediaFileId     = fileId,
-                OwnerEntityName = owner.EntityName,
-                OwnerEntityId   = owner.EntityId,
-                Role            = role,
-                SortOrder       = sortOrder,
-                CreatedAt       = manager.Now
-            }, ct).ConfigureAwait(false);
+    private async Task AttachAsync(
+        MediaFileInfo file, string role, int sortOrder, string correlationId, CancellationToken ct)
+    {
+        var link = new MediaAttachment
+        {
+            Id              = Guid.NewGuid(),
+            MediaFileId     = file.Id,
+            OwnerEntityName = owner.EntityName,
+            OwnerEntityId   = owner.EntityId,
+            Role            = role,
+            SortOrder       = sortOrder,
+            CreatedAt       = manager.Now
+        };
+
+        IReadOnlyList<MediaChange> changes = manager.HasParticipants
+            ? [new MediaChange
+              {
+                  Kind          = MediaChangeKind.Attached,
+                  MediaFileId   = file.Id,
+                  File          = file,
+                  Owner         = owner,
+                  Role          = role,
+                  SortOrder     = sortOrder,
+                  CorrelationId = correlationId,
+                  OccurredAt    = link.CreatedAt
+              }]
+            : [];
+
+        await manager.WriteAsync(changes, () => store.AddAttachmentAsync(link, ct), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The detaches removing <paramref name="links"/> would make, as participants are told them —
+    /// or nothing, without a participant to tell.
+    /// </summary>
+    private async Task<IReadOnlyList<MediaChange>> DescribeDetachAsync(
+        IReadOnlyList<MediaAttachment> links, string correlationId, CancellationToken ct)
+    {
+        if (!manager.HasParticipants || links.Count == 0)
+            return [];
+
+        var files = await manager.SnapshotsAsync(links.Select(l => l.MediaFileId), ct).ConfigureAwait(false);
+
+        return [.. links.Select(link => manager.Detached(files[link.MediaFileId], link, correlationId))];
+    }
 
     /// <summary>
     /// The next free position in a role. Computed from the rows rather than kept as a counter, so it

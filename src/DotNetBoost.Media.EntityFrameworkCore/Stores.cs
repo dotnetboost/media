@@ -17,11 +17,109 @@ namespace DotNetBoost.Media.EntityFrameworkCore;
 /// durable immediately — an upload's row, which must exist before the method returns, since its
 /// bytes already do.
 /// </para>
+/// <para>
+/// Every save also carries what an <see cref="IMediaWriteParticipant"/> enlisted through
+/// <see cref="EfCoreMediaWriteScope"/> for that write, so an audit entry commits with the media
+/// rows it describes, in the same transaction.
+/// </para>
 /// </summary>
-/// <param name="context">The context holding the table.</param>
-public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
+public sealed class EfCoreMediaStore : IEnlistingMediaStore
 {
-    private readonly DbContext _context = context ?? throw new ArgumentNullException(nameof(context));
+    private readonly DbContext              _context;
+    private readonly EfCoreMediaWriteScope? _writeScope;
+
+    /// <summary>A store with no write scope, so no participant can enlist in its writes.</summary>
+    /// <param name="context">The context holding the table.</param>
+    public EfCoreMediaStore(DbContext context) : this(context, null) { }
+
+    /// <summary>A store whose writes commit what participants enlist in <paramref name="writeScope"/>.</summary>
+    /// <param name="context">The context holding the table.</param>
+    /// <param name="writeScope">Where participants enlist. Must wrap <paramref name="context"/>.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="writeScope"/> wraps a different context, whose entities this store's save
+    /// would never reach.
+    /// </exception>
+    public EfCoreMediaStore(DbContext context, EfCoreMediaWriteScope? writeScope)
+    {
+        _context = context ?? throw new ArgumentNullException(nameof(context));
+
+        if (writeScope is not null && !ReferenceEquals(writeScope.Context, context))
+        {
+            throw new ArgumentException(
+                "The write scope wraps a different DbContext instance from the store's, so nothing " +
+                "enlisted in it would be saved with the media rows.", nameof(writeScope));
+        }
+
+        _writeScope = writeScope;
+    }
+
+    /// <summary>
+    /// Saves the context — the media rows and whatever participants enlisted with them — and, once
+    /// that has committed, forgets the enlisted entities so a later failure cannot detach them.
+    /// </summary>
+    private async Task<int> SaveAsync(CancellationToken ct)
+    {
+        var written = await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        _writeScope?.Committed();
+        return written;
+    }
+
+    /// <inheritdoc/>
+    public void DiscardEnlisted() => _writeScope?.Discard();
+
+    /// <inheritdoc/>
+    public async Task DeleteFileAsync(MediaFile file, bool softDelete, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(file);
+
+        var links = await _context.Set<MediaAttachment>()
+            .Where(a => a.MediaFileId == file.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        _context.Set<MediaAttachment>().RemoveRange(links);
+
+        if (softDelete)
+        {
+            if (_context.Entry(file).State == EntityState.Detached)
+                _context.Set<MediaFile>().Update(file);
+        }
+        else
+        {
+            _context.Set<MediaFile>().Remove(file);
+        }
+
+        try
+        {
+            // One SaveChanges for the links, the row and whatever was enlisted: EF sends it as one
+            // transaction, which is the whole reason this method exists.
+            await SaveAsync(ct).ConfigureAwait(false);
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // The row (or a link) was deleted underneath the caller. Nothing committed; take back
+            // what this left tracked, or the application's next save would retry it.
+            Untrack(links, file);
+            throw new MediaNotFoundException(file.Id) { Source = ex.Source };
+        }
+        catch
+        {
+            Untrack(links, file);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Takes back what a failed delete left tracked. The context is usually the application's own,
+    /// so links left <c>Deleted</c> would otherwise be removed by its next unrelated save.
+    /// </summary>
+    private void Untrack(List<MediaAttachment> links, MediaFile file)
+    {
+        foreach (var link in links)
+            _context.Entry(link).State = EntityState.Detached;
+
+        _context.Entry(file).State = EntityState.Detached;
+    }
 
     /// <inheritdoc/>
     public async Task AddAsync(MediaFile file, CancellationToken ct = default)
@@ -44,7 +142,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
 
         try
         {
-            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+            await SaveAsync(ct).ConfigureAwait(false);
         }
         catch (DbUpdateException ex)
         {
@@ -109,7 +207,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
 
         try
         {
-            var written = await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+            var written = await SaveAsync(ct).ConfigureAwait(false);
 
             // Nothing was written and nothing is there: the row was deleted underneath the caller.
             // (Zero rows written with the row present just means nothing actually changed.)
@@ -133,7 +231,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             return false;
 
         _context.Set<MediaFile>().Remove(file);
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        await SaveAsync(ct).ConfigureAwait(false);
         return true;
     }
 
@@ -178,7 +276,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
 
         try
         {
-            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+            await SaveAsync(ct).ConfigureAwait(false);
         }
         catch (DbUpdateException ex)
         {
@@ -234,7 +332,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             return false;
 
         _context.Set<MediaAttachment>().Remove(attachment);
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        await SaveAsync(ct).ConfigureAwait(false);
         return true;
     }
 
@@ -274,7 +372,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
             return 0;
 
         _context.Set<MediaAttachment>().RemoveRange(doomed);
-        await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+        await SaveAsync(ct).ConfigureAwait(false);
         return doomed.Count;
     }
 
@@ -288,7 +386,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
 
         try
         {
-            var written = await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+            var written = await SaveAsync(ct).ConfigureAwait(false);
 
             if (written == 0 && !await AttachmentExistsAsync(attachment.Id, ct).ConfigureAwait(false))
                 throw new MediaNotFoundException(attachment.Id);
@@ -319,7 +417,7 @@ public sealed class EfCoreMediaStore(DbContext context) : IMediaStore
         {
             // One SaveChanges for the lot, which EF sends as one batched command inside one
             // transaction. That is the whole point: a reorder either takes or it does not.
-            await _context.SaveChangesAsync(ct).ConfigureAwait(false);
+            await SaveAsync(ct).ConfigureAwait(false);
         }
         catch (DbUpdateConcurrencyException ex)
         {

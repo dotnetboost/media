@@ -22,6 +22,8 @@ public abstract class StoreIntegrationTests : ProviderTests.StoreContractTests;
 [Collection(PostgreSqlCollection.Name)]
 public sealed class PostgreSqlEfCoreTests(PostgreSqlFixture fixture) : StoreIntegrationTests
 {
+    protected override bool Enlists => true;
+
     private IntegrationContext? _context;
 
     protected override async Task<IMediaStore> CreateStoreAsync()
@@ -136,6 +138,8 @@ public sealed class PostgreSqlDapperTests(PostgreSqlFixture fixture) : StoreInte
 [Collection(SqlServerCollection.Name)]
 public sealed class SqlServerEfCoreTests(SqlServerFixture fixture) : StoreIntegrationTests
 {
+    protected override bool Enlists => true;
+
     private IntegrationContext? _context;
 
     protected override async Task<IMediaStore> CreateStoreAsync()
