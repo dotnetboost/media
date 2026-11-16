@@ -2,6 +2,7 @@ using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using System.Reflection;
 
 namespace DotNetBoost.Media.Core;
@@ -12,6 +13,11 @@ public sealed class MediaBuilder
     private readonly List<string> _storageBackends = [];
     private readonly List<Assembly> _roleAssemblies = [];
     private readonly Dictionary<string, IReadOnlyList<MediaEntityRole>> _declaredRoles = new(StringComparer.Ordinal);
+
+    // Inline files-deleted handlers by the factory OnFilesDeleted registered for each, so Build()
+    // can name them: a factory descriptor otherwise says nothing about what it builds.
+    private readonly Dictionary<object, string> _inlineHandlerNames = new(ReferenceEqualityComparer.Instance);
+    private int _inlineHandlers;
 
     /// <summary>The service collection being configured. Providers and backends register here.</summary>
     public IServiceCollection Services { get; }
@@ -36,6 +42,12 @@ public sealed class MediaBuilder
 
     /// <summary>The names of the storage backends registered so far, in registration order.</summary>
     internal IReadOnlyList<string> StorageBackends => _storageBackends;
+
+    /// <summary>The next inline files-deleted handler's ordinal on this builder, from 1.</summary>
+    internal int NextInlineHandlerOrdinal() => ++_inlineHandlers;
+
+    /// <summary>Records what an inline handler's factory is called, for the startup line.</summary>
+    internal void NameInlineHandler(object factory, string name) => _inlineHandlerNames[factory] = name;
 
     /// <summary>Records an assembly to scan for <c>[MediaRole]</c> at <see cref="Build"/>.</summary>
     internal void AddRoleAssembly(Assembly assembly) => _roleAssemblies.Add(assembly);
@@ -118,7 +130,45 @@ public sealed class MediaBuilder
         if (Options.ValidateStorageAtStartup)
             Services.AddHostedService<MediaValidationHostedService>();
 
+        // Always, unlike the validation above: it costs one Debug line, and "which handlers will
+        // hear about deletes" is the question to answer when a table of alt text is found full of
+        // rows for files that no longer exist.
+        var handlers = DeletedHandlerNames();
+        Services.AddHostedService(sp => new MediaDeletedHandlersReport(
+            handlers, sp.GetService<ILogger<MediaDeletedHandlersReport>>()));
+
         return Services;
+    }
+
+    /// <summary>
+    /// The files-deleted handlers registered so far, in registration order, read from the service
+    /// descriptors rather than resolved: building scoped handlers at startup just to name them could
+    /// open connections or fail for reasons that have nothing to do with media. Reading descriptors
+    /// also catches a handler registered with <c>AddScoped&lt;IMediaFilesDeletedHandler, T&gt;()</c>
+    /// directly. One registered after <see cref="Build"/> is missed, and the docs say so.
+    /// </summary>
+    private List<string> DeletedHandlerNames()
+    {
+        var names = new List<string>();
+
+        // Keyed ones skipped first: on the 8.0 abstractions, reading ImplementationType of a keyed
+        // descriptor throws. A keyed handler is never resolved as IEnumerable<IMediaFilesDeletedHandler>
+        // anyway, so the engine would not call it either.
+        var handlers = Services.Where(d => d.ServiceType == typeof(IMediaFilesDeletedHandler) && !d.IsKeyedService);
+
+        foreach (var descriptor in handlers)
+        {
+            names.Add(descriptor switch
+            {
+                { ImplementationType: { } type }                           => type.Name,
+                { ImplementationInstance: IMediaFilesDeletedHandler h }    => MediaHandlerNames.Of(h),
+                { ImplementationFactory: { } factory }
+                    when _inlineHandlerNames.TryGetValue(factory, out var n) => n,
+                _                                                          => "(registered by factory)"
+            });
+        }
+
+        return names;
     }
 
     /// <summary>

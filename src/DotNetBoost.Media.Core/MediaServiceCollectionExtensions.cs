@@ -3,6 +3,7 @@ using DotNetBoost.Media.Core.Interfaces;
 using DotNetBoost.Media.Core.Metadata;
 using DotNetBoost.Media.Core.Services;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using System.Diagnostics.Metrics;
 using System.Reflection;
 
 namespace Microsoft.Extensions.DependencyInjection
@@ -42,6 +43,10 @@ namespace Microsoft.Extensions.DependencyInjection
             // An empty registry until Build() replaces it, so an engine built without one — a test
             // constructing MediaManager directly, say — checks nothing rather than failing to resolve.
             services.TryAddSingleton<IMediaRoleRegistry>(MediaRoleRegistry.Empty);
+
+            // The counters on MediaTelemetry.MeterName. GetService, not GetRequiredService: an
+            // ASP.NET Core host has an IMeterFactory and a console application may not.
+            services.TryAddSingleton(sp => new MediaMetrics(sp.GetService<IMeterFactory>()));
 
             // Scoped: the metadata store is (an EF Core DbContext, a Dapper connection), and the
             // engine is only as long-lived as the store behind it.
@@ -345,14 +350,28 @@ namespace Microsoft.Extensions.DependencyInjection
         /// Called with the scope's own <see cref="IServiceProvider"/> — the delete's scope, so a
         /// <c>DbContext</c> resolved from it is the one the delete used — and the ids that went.
         /// </param>
+        /// <param name="name">
+        /// What the failure log, the <see cref="MediaTelemetry.DeletedHandlerFailures"/> counter and
+        /// the startup line call this handler — <c>"alt-text"</c>, <c>"search-index"</c>. Left
+        /// null, it is <c>inline handler #N in {Class}</c>, which tells two inline handlers apart
+        /// but not what either one is for.
+        /// </param>
         public static MediaBuilder OnFilesDeleted(
             this MediaBuilder builder,
-            Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler)
+            Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler,
+            string? name = null)
         {
             ArgumentNullException.ThrowIfNull(builder);
             ArgumentNullException.ThrowIfNull(handler);
 
-            builder.Services.AddScoped<IMediaFilesDeletedHandler>(sp => new DelegateMediaFilesDeletedHandler(sp, handler));
+            var displayName = MediaHandlerNames.ForDelegate(name, handler, builder.NextInlineHandlerOrdinal());
+
+            // A descriptor built here rather than through AddScoped, so the builder can recognise
+            // this exact factory at Build() and name it in the startup line.
+            Func<IServiceProvider, object> factory = sp => new DelegateMediaFilesDeletedHandler(sp, handler, displayName);
+
+            builder.Services.Add(new ServiceDescriptor(typeof(IMediaFilesDeletedHandler), factory, ServiceLifetime.Scoped));
+            builder.NameInlineHandler(factory, displayName);
             return builder;
         }
     }

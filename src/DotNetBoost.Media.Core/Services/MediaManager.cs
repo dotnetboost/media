@@ -19,8 +19,16 @@ internal sealed partial class MediaManager(
     MediaOptions options,
     TimeProvider timeProvider,
     IEnumerable<IMediaFilesDeletedHandler> deletedHandlers,
-    ILogger<MediaManager> logger) : IMediaManager
+    ILogger<MediaManager> logger,
+    MediaMetrics? metrics = null) : IMediaManager
 {
+    /// <summary>
+    /// How many of a failed notification's ids go on its log entry. Enough to rerun the cleanup by
+    /// hand for any ordinary delete; a bulk <c>DeleteAllAsync</c> past this logs the total and the
+    /// first ones rather than an unbounded entry.
+    /// </summary>
+    internal const int LoggedIdLimit = 100;
+
     private readonly MediaValidator _validator = new(options);
 
     // Materialized once rather than enumerated per delete: the container hands back a fresh
@@ -213,8 +221,8 @@ internal sealed partial class MediaManager(
 
         // Announced only on the path that actually deleted something: a delete of an id that was
         // already gone tells a handler nothing it can act on, and would have it clearing records
-        // for a file some earlier delete already reported.
-        await NotifyDeletedAsync([file.Id], ct).ConfigureAwait(false);
+        // for a file some earlier delete already reported. No token: see NotifyDeletedAsync.
+        await NotifyDeletedAsync([file.Id]).ConfigureAwait(false);
         return true;
     }
 
@@ -470,10 +478,18 @@ internal sealed partial class MediaManager(
     /// there is nothing a thrown exception could undo — it would only report a completed delete as
     /// a failure, invite a retry of something that cannot be repeated, and stop the handlers after
     /// it from hearing about the delete at all. The handler's own records are then stale, which is
-    /// the smaller of the two problems and the one a log line is for.
+    /// the smaller of the two problems and the one a log line is for. That line carries the ids
+    /// (up to <see cref="LoggedIdLimit"/>) so the cleanup can be rerun, and the failure counter
+    /// goes up so it is noticed without reading every log.
+    /// </para>
+    /// <para>
+    /// It takes no <see cref="CancellationToken"/>, for the same reason <c>TryRemoveAsync</c> does
+    /// not: by the time it runs the delete has happened, so the caller giving up — a client
+    /// disconnecting from <c>DELETE /api/media/{id}</c> — must not cancel the cleanup that
+    /// belongs to it. Handlers get <see cref="CancellationToken.None"/>.
     /// </para>
     /// </summary>
-    internal async Task NotifyDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct)
+    internal async Task NotifyDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds)
     {
         if (_deletedHandlers.Length == 0 || mediaFileIds.Count == 0)
             return;
@@ -482,13 +498,16 @@ internal sealed partial class MediaManager(
         {
             try
             {
-                await handler.OnDeletedAsync(mediaFileIds, ct).ConfigureAwait(false);
+                await handler.OnDeletedAsync(mediaFileIds, CancellationToken.None).ConfigureAwait(false);
             }
 #pragma warning disable CA1031 // One handler's failure must not break the delete or the others.
             catch (Exception ex)
 #pragma warning restore CA1031
             {
-                LogDeletedHandlerFailed(ex, handler.GetType().Name, mediaFileIds.Count);
+                var name = MediaHandlerNames.Of(handler);
+
+                LogDeletedHandlerFailed(ex, name, mediaFileIds.Count, [.. mediaFileIds.Take(LoggedIdLimit)]);
+                metrics?.DeletedHandlerFailed(name);
             }
         }
     }
@@ -559,8 +578,9 @@ internal sealed partial class MediaManager(
 
     [LoggerMessage(EventId = 7004, Level = LogLevel.Error,
         Message = "Media files-deleted handler {Handler} failed for {Count} deleted file(s). The files are gone; " +
-                  "whatever this handler keeps about them has not been cleaned up.")]
-    private partial void LogDeletedHandlerFailed(Exception exception, string handler, int count);
+                  "whatever this handler keeps about them has not been cleaned up. Rerun its cleanup for these " +
+                  "ids (at most the first 100 are listed): {MediaIds}")]
+    private partial void LogDeletedHandlerFailed(Exception exception, string handler, int count, Guid[] mediaIds);
 
     [LoggerMessage(EventId = 7003, Level = LogLevel.Warning,
         Message = "Media {MediaId} names storage backend '{Provider}', which is not registered; its row is " +
@@ -838,25 +858,32 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         var deleted = new List<Guid>(fileIds.Length);
 
-        foreach (var fileId in fileIds)
+        try
         {
-            if (shared.Contains(fileId))
-                continue;
+            foreach (var fileId in fileIds.Where(id => !shared.Contains(id)))
+            {
+                // Re-read rather than trust the list: another request may have deleted the file
+                // between the two, and DeleteFileAsync needs the row to find the bytes.
+                var file = await store.FindAsync(fileId, includeDeleted: false, ct).ConfigureAwait(false);
+                if (file is null)
+                    continue;
 
-            // Re-read rather than trust the list: another request may have deleted the file between
-            // the two, and DeleteFileAsync needs the row to find the bytes.
-            var file = await store.FindAsync(fileId, includeDeleted: false, ct).ConfigureAwait(false);
-            if (file is null)
-                continue;
-
-            await manager.DeleteFileAsync(file, ct).ConfigureAwait(false);
-            deleted.Add(file.Id);
+                await manager.DeleteFileAsync(file, ct).ConfigureAwait(false);
+                deleted.Add(file.Id);
+            }
         }
-
-        // One notification for the batch rather than one per file, and only the files that actually
-        // went — the detached ones are still in use, and telling a handler about them would have it
-        // clearing records belonging to a live file.
-        await manager.NotifyDeletedAsync(deleted, ct).ConfigureAwait(false);
+        finally
+        {
+            // One notification for the batch rather than one per file, and only the files that
+            // actually went — the detached ones are still in use, and telling a handler about them
+            // would have it clearing records belonging to a live file.
+            //
+            // In a finally: if the loop throws or is cancelled part-way, the files deleted before
+            // that are still gone, and their handlers still need to hear about it. The exception
+            // carries on to the caller afterwards. A file whose own delete threw is not in the list:
+            // its row is still there, and a retry of the delete reports it then.
+            await manager.NotifyDeletedAsync(deleted).ConfigureAwait(false);
+        }
 
         return deleted;
     }
@@ -1111,9 +1138,13 @@ internal sealed class MediaBulkAccessor(
 /// </summary>
 internal sealed class DelegateMediaFilesDeletedHandler(
     IServiceProvider services,
-    Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler)
+    Func<IServiceProvider, IReadOnlyCollection<Guid>, CancellationToken, Task> handler,
+    string name)
     : IMediaFilesDeletedHandler
 {
+    /// <summary>What the failure log, the failure counter and the startup line call it.</summary>
+    public string Name => name;
+
     /// <inheritdoc/>
     public Task OnDeletedAsync(IReadOnlyCollection<Guid> mediaFileIds, CancellationToken ct = default) =>
         handler(services, mediaFileIds, ct);

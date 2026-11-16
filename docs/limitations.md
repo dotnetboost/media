@@ -68,6 +68,18 @@ invisible to it. Register `.OnFilesDeleted(...)` rather than cleaning up per cal
 REST endpoint's own `DELETE /api/media/{id}` is a path your code never runs on. See
 [attaching to entities](attaching-to-entities.md#cleaning-up-your-own-records-about-a-file).
 
+## Handler failures are logged, not retried
+
+A files-deleted handler that throws doesn't fail the delete, and the library doesn't call it
+again. The failure is logged with the ids the handler missed and counted on
+`dotnetboost.media.deleted_handler.failures`, and the handler's records about those files stay
+stale until something cleans them up. Pair each handler with a periodic sweep of its own store, or
+catch inside the handler and queue a retry yourself. See
+[attaching to entities](attaching-to-entities.md#checklist-for-anything-that-stores-rows-about-a-file).
+
+The library can't tell a forgotten handler from an application that has nothing to clean up. The
+most it does is log the registered handlers at startup, at Debug.
+
 ## No built-in migration between backends
 
 Several backends can be registered at once and each row records its own, so **switching which

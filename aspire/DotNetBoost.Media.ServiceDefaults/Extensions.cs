@@ -57,7 +57,10 @@ public static class Extensions
             .WithMetrics(metrics => metrics
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation())
+                .AddRuntimeInstrumentation()
+                // The library's own counters (MediaTelemetry.MeterName). A literal: ServiceDefaults
+                // references no library project.
+                .AddMeter("DotNetBoost.Media"))
             .WithTracing(tracing => tracing
                 .AddSource(builder.Environment.ApplicationName)
                 .AddAspNetCoreInstrumentation(tracing =>
