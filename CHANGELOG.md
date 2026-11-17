@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.0-preview.3] - 2026-11-17
+
 ### Added
 - **Write participants: `IMediaWriteParticipant`, registered with `UseWriteParticipant<T>()`.**
   Told about every write — `Uploaded`, `Updated`, `Attached`, `Detached`, `Replaced`, `Reordered`,
@@ -42,6 +44,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   nothing. Links to files somebody else uses are still removed first; each file nobody else uses is
   now deleted together with its link.
 - **The EF Core store deletes a file's links and its row in one `SaveChanges`.**
+- **`DeleteAsync` returns `false` when a concurrent delete gets there first** on the EF Core store,
+  rather than `true` for a delete it did not make.
 
 ### Fixed
 - **Handlers are no longer cancelled by the caller's token.** They get `CancellationToken.None`:
@@ -519,7 +523,8 @@ changing which backend receives new uploads does not strand the files that came 
   502 when the storage backend is what failed.
 - Responses deliberately omit the storage provider, container and path.
 
-[Unreleased]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.2...HEAD
+[Unreleased]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.3...HEAD
+[1.0.0-preview.3]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.2...v1.0.0-preview.3
 [1.0.0-preview.2]: https://github.com/dotnetboost/media/compare/v1.0.0-preview.1...v1.0.0-preview.2
 [1.0.0-preview.1]: https://github.com/dotnetboost/media/releases/tag/v1.0.0-preview.1
 
