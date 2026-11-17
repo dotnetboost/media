@@ -190,6 +190,35 @@ before rows.
 If it matters for your data, do the delete when the entity is already unreachable — which is
 normally exactly when you call it.
 
+## Write participants need the EF Core store
+
+A write participant is only worth having if what it enlists commits with the write, and only the
+Entity Framework Core store shares a unit of work with the application. The Dapper store saves
+each statement on the connection it is given, and the MongoDB store has no session to hand out, so
+neither implements `IEnlistingMediaStore` and `Build()` refuses a participant for them rather than
+run one with no atomicity. With those stores, record changes yourself around the calls you make —
+and note that the REST endpoints' writes run none of your code.
+
+## Some calls are several commits
+
+Uploading to an entity is an upload and then an attach; `DetachAllAsync` is a detach per link;
+`DeleteAllAsync` is a detach per link to a shared file and then one delete per file nobody else
+uses. Each step is its own store write, and a participant's record of each step commits with that
+step. A failure part-way therefore leaves the earlier steps, and their records, committed — the
+records stay true to the rows, but the call is not all-or-nothing. Wrap it in a transaction on your
+context if you need it atomic.
+
+What *is* one write on the EF Core store: a delete (the file's links and its row), and replacing a
+single-valued role (the old holder out and the new one in), so a failed replacement leaves the old
+file in the role rather than the role empty. On the Dapper and MongoDB stores a replacement is
+still two writes, and a failure between them leaves the role empty.
+
+A `DeleteAllAsync` that fails part-way leaves the files it had not reached still attached to the
+entity, so calling it again finishes the job.
+
+`DetachAllAsync` with a participant registered lists an entity's links and then removes them, in
+two statements. A link added in between is removed without being reported.
+
 ## A file's attachments have no metadata of their own
 
 An attachment carries an owner, a role and a position, and nothing else. Per-link alt text, a

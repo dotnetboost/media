@@ -265,6 +265,18 @@ longer than a statement. Either form runs in the delete's own scope, so a `DbCon
 the `IServiceProvider` passed in is the one the delete used. Handlers hear about the files that were
 **deleted** — never the ones merely detached, which are still in use and whose records must survive.
 
+To record changes rather than clean up after them — an audit trail — register a **write
+participant** instead. It is told about every upload, edit, attach, detach, reorder and delete
+*before* the EF Core store saves it, enlists its own rows in that same save, and aborts the write
+by throwing:
+
+```csharp
+.UseEntityFrameworkCore<AppDbContext>()
+.UseWriteParticipant<MediaAuditParticipant>()   // IMediaWriteParticipant, enlists via EfCoreMediaWriteScope
+```
+
+See [write participants](docs/attaching-to-entities.md#recording-each-change-as-it-commits-write-participants).
+
 ---
 
 ## Reading a listing

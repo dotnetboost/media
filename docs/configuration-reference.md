@@ -44,6 +44,17 @@ missing.
 | `UseEntityKeyAccessor<T>()` | Replaces how entity keys are read. |
 | `OnFilesDeleted<THandler>()` | Registers an `IMediaFilesDeletedHandler`, scoped. Call it more than once for several. |
 | `OnFilesDeleted((services, ids, ct) => …, name)` | The same, written inline. `services` is the delete's own scope. `name` (optional) is what the failure log and counter call it. |
+| `UseWriteParticipant<TParticipant>()` | Registers an `IMediaWriteParticipant`, scoped, told about every write before it commits. Call it more than once for several. EF Core store only: `Build()` refuses it otherwise. |
+
+### Write participants
+
+For work that must commit with a media write or not at all — an audit entry. A participant is
+called before the store saves, enlists what it wants saved through `EfCoreMediaWriteScope`, and
+aborts the write by throwing. See
+[attaching to entities](attaching-to-entities.md#recording-each-change-as-it-commits-write-participants).
+
+A custom store accepts participants by implementing `IEnlistingMediaStore` and registering itself
+with `MediaBuilderGuard.EnsureStoreNotConfigured(builder, name, supportsWriteParticipants: true)`.
 
 ### Files-deleted handlers
 

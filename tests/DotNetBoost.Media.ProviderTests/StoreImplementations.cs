@@ -17,6 +17,8 @@ public sealed class InMemoryStoreContractTests : StoreContractTests
 /// <summary>The contract, against the EF Core store over a SQLite database.</summary>
 public sealed class EfCoreStoreContractTests : StoreContractTests
 {
+    protected override bool Enlists => true;
+
     private SqliteConnection? _connection;
     private MediaTestContext? _context;
 
@@ -119,8 +121,29 @@ public sealed class MediaTestContext(DbContextOptions<MediaTestContext> options)
             b.Property(p => p.Name).HasMaxLength(128);
         });
 
+        // What a write participant enlists in the participant tests — an audit entry, in effect.
+        modelBuilder.Entity<MediaJournalEntry>(b =>
+        {
+            b.ToTable("MediaJournal");
+            b.HasKey(e => e.Id);
+        });
+
         modelBuilder.ApplyMedia();
     }
+}
+
+/// <summary>A row a write participant enlists, standing in for an audit entry.</summary>
+public sealed class MediaJournalEntry
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    public string Kind { get; set; } = string.Empty;
+
+    public Guid? MediaFileId { get; set; }
+
+    public string? Owner { get; set; }
+
+    public string CorrelationId { get; set; } = string.Empty;
 }
 
 /// <summary>An ordinary entity, to prove the media table needs nothing from it.</summary>
