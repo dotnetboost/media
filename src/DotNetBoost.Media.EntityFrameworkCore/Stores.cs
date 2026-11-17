@@ -122,6 +122,48 @@ public sealed class EfCoreMediaStore : IEnlistingMediaStore
     }
 
     /// <inheritdoc/>
+    public async Task<int> ReplaceAttachmentsAsync(MediaAttachment link, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(link);
+
+        var holders = await _context.Set<MediaAttachment>()
+            .Where(a => a.OwnerEntityName == link.OwnerEntityName
+                        && a.OwnerEntityId == link.OwnerEntityId
+                        && a.Role == link.Role)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        _context.Set<MediaAttachment>().RemoveRange(holders);
+        _context.Set<MediaAttachment>().Add(link);
+
+        try
+        {
+            // One SaveChanges: EF sends the DELETEs before the INSERT, inside one transaction, so the
+            // role goes from its old holder to its new one with no moment in which it has neither.
+            await SaveAsync(ct).ConfigureAwait(false);
+            return holders.Count;
+        }
+        catch (DbUpdateException ex)
+        {
+            foreach (var holder in holders)
+                _context.Entry(holder).State = EntityState.Detached;
+
+            _context.Entry(link).State = EntityState.Detached;
+
+            // A holder deleted underneath (EF reports the DELETE that touched nothing as a
+            // concurrency failure), or the same link inserted by somebody else: either way the role
+            // changed while this was replacing it. Anything else is reported as itself.
+            if (ex is not DbUpdateConcurrencyException && !await AttachmentExistsAsync(link, ct).ConfigureAwait(false))
+                throw;
+
+            throw new MediaConflictException(
+                $"The '{link.Role}' role on {link.OwnerEntityName} {link.OwnerEntityId} changed while it was being " +
+                "replaced. Read it again and retry.",
+                ex);
+        }
+    }
+
+    /// <inheritdoc/>
     public async Task AddAsync(MediaFile file, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(file);

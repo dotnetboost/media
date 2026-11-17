@@ -199,14 +199,22 @@ neither implements `IEnlistingMediaStore` and `Build()` refuses a participant fo
 run one with no atomicity. With those stores, record changes yourself around the calls you make —
 and note that the REST endpoints' writes run none of your code.
 
-## Some writes are several commits
+## Some calls are several commits
 
-Replacing a single-valued role is a detach and then an attach; `DeleteAllAsync` is a detach and
-then one delete per file; uploading to an entity is an upload and then an attach. Each step is its
-own store write, and a participant's record of each step commits with that step. A failure
-part-way therefore leaves the earlier steps, and their records, committed — the records stay true
-to the rows, but the operation is not all-or-nothing. A single delete is one write on the EF Core
-store. Wrap the call in a transaction on your context if you need the whole operation atomic.
+Uploading to an entity is an upload and then an attach; `DetachAllAsync` is a detach per link;
+`DeleteAllAsync` is a detach per link to a shared file and then one delete per file nobody else
+uses. Each step is its own store write, and a participant's record of each step commits with that
+step. A failure part-way therefore leaves the earlier steps, and their records, committed — the
+records stay true to the rows, but the call is not all-or-nothing. Wrap it in a transaction on your
+context if you need it atomic.
+
+What *is* one write on the EF Core store: a delete (the file's links and its row), and replacing a
+single-valued role (the old holder out and the new one in), so a failed replacement leaves the old
+file in the role rather than the role empty. On the Dapper and MongoDB stores a replacement is
+still two writes, and a failure between them leaves the role empty.
+
+A `DeleteAllAsync` that fails part-way leaves the files it had not reached still attached to the
+entity, so calling it again finishes the job.
 
 `DetachAllAsync` with a participant registered lists an entity's links and then removes them, in
 two statements. A link added in between is removed without being reported.

@@ -78,6 +78,63 @@ public abstract class StoreContractTests : IAsyncLifetime
         Assert.NotNull(await Store.FindAsync(kept.Id));
     }
 
+    [Fact]
+    public async Task ReplaceAttachments_swaps_the_holder_and_leaves_everything_else_alone()
+    {
+        if (Store is not IEnlistingMediaStore enlisting)
+            return;
+
+        var old = Row("old.png");
+        var replacement = Row("new.png");
+        await Store.AddAsync(old);
+        await Store.AddAsync(replacement);
+        await Store.AddAttachmentAsync(Link(old.Id, role: "primary"));
+        await Store.AddAttachmentAsync(Link(old.Id, role: "gallery"));
+        await Store.AddAttachmentAsync(Link(old.Id, ownerId: "2", role: "primary"));
+
+        Assert.Equal(1, await enlisting.ReplaceAttachmentsAsync(Link(replacement.Id, role: "primary")));
+
+        var owner = new MediaOwner("Product", "1");
+        Assert.Equal([replacement.Id], (await Store.ListAttachmentsAsync(owner, "primary")).Select(a => a.MediaFileId));
+        Assert.Equal([old.Id], (await Store.ListAttachmentsAsync(owner, "gallery")).Select(a => a.MediaFileId));
+        Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "2"), "primary"));
+    }
+
+    [Fact]
+    public async Task ReplaceAttachments_of_an_empty_role_adds_the_link()
+    {
+        if (Store is not IEnlistingMediaStore enlisting)
+            return;
+
+        var row = Row();
+        await Store.AddAsync(row);
+
+        Assert.Equal(0, await enlisting.ReplaceAttachmentsAsync(Link(row.Id, role: "primary")));
+        Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "1"), "primary"));
+    }
+
+    [Fact]
+    public async Task ReplaceAttachments_can_keep_a_file_that_already_holds_the_role()
+    {
+        // The same (file, owner, role) deleted and inserted in one save: the unique index only
+        // allows it if the DELETE goes first, which is the engine's to get right on every database.
+        if (Store is not IEnlistingMediaStore enlisting)
+            return;
+
+        var kept = Row("kept.png");
+        var other = Row("other.png");
+        await Store.AddAsync(kept);
+        await Store.AddAsync(other);
+        await Store.AddAttachmentAsync(Link(kept.Id, role: "primary"));
+        await Store.AddAttachmentAsync(Link(other.Id, role: "primary", sortOrder: 1));
+
+        var link = Link(kept.Id, role: "primary");
+        Assert.Equal(2, await enlisting.ReplaceAttachmentsAsync(link));
+
+        var holder = Assert.Single(await Store.ListAttachmentsAsync(new MediaOwner("Product", "1"), "primary"));
+        Assert.Equal((kept.Id, link.Id), (holder.MediaFileId, holder.Id));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

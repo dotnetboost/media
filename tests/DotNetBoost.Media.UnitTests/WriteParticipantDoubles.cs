@@ -83,6 +83,10 @@ internal sealed class EnlistingMediaStore(InMemoryMediaStore inner) : IEnlisting
     public async Task DeleteFileAsync(MediaFile file, bool softDelete, CancellationToken ct = default)
     {
         ThrowIfFailing();
+
+        if (FailFileDeletesAfter is { } limit && FileDeletes >= limit)
+            throw new InvalidOperationException("The store was told to fail this file delete.");
+
         FileDeletes++;
 
         await inner.RemoveAttachmentsOfFileAsync(file.Id, ct);
@@ -93,6 +97,28 @@ internal sealed class EnlistingMediaStore(InMemoryMediaStore inner) : IEnlisting
             await inner.DeleteAsync(file.Id, ct);
 
         Commit();
+    }
+
+    /// <summary>How many times <see cref="IEnlistingMediaStore.ReplaceAttachmentsAsync"/> ran.</summary>
+    public int Replacements { get; private set; }
+
+    /// <summary>
+    /// Makes the next file delete throw, after this many have succeeded — for a
+    /// <c>DeleteAllAsync</c> that fails part-way. Null: never.
+    /// </summary>
+    public int? FailFileDeletesAfter { get; set; }
+
+    public async Task<int> ReplaceAttachmentsAsync(MediaAttachment link, CancellationToken ct = default)
+    {
+        ThrowIfFailing();
+        Replacements++;
+
+        var displaced = await inner.RemoveAttachmentsAsync(
+            new MediaOwner(link.OwnerEntityName, link.OwnerEntityId), link.Role, ct);
+        await inner.AddAttachmentAsync(link, ct);
+
+        Commit();
+        return displaced;
     }
 
     public Task<IReadOnlyList<MediaFile>> QueryAsync(MediaQuery query, CancellationToken ct = default) =>

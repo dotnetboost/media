@@ -30,17 +30,21 @@ namespace DotNetBoost.Media.Core.Interfaces;
 /// does; Dapper and MongoDB do not.
 /// </para>
 /// <para>
-/// <b>One call per change.</b> An operation that makes several changes — a delete detaching a file
-/// from two entities, say — calls each participant once per change, in order, with one
-/// <see cref="MediaChange.CorrelationId"/> across them. Several participants may be registered;
-/// all run, in registration order, and the first to throw stops the rest. A call that changes
-/// nothing — attaching a file already attached, detaching one that is not — calls none of them.
+/// <b>One call per operation.</b> Each <see cref="MediaChange"/> is one thing a caller asked for,
+/// however many rows it touches: deleting a file attached to two entities is one
+/// <see cref="MediaChangeKind.Deleted"/> listing both links, replacing a banner is one
+/// <see cref="MediaChangeKind.Replaced"/>, reordering a gallery is one
+/// <see cref="MediaChangeKind.Reordered"/>. Several participants may be registered; all run, in
+/// registration order, and the first to throw stops the rest. A call that changes nothing —
+/// attaching a file already attached, detaching one that is not, a reorder that moves nothing —
+/// calls none of them.
 /// </para>
 /// <para>
-/// <b>Writes that take more than one save.</b> Replacing a single-valued role, and
-/// <c>DeleteAllAsync</c>, are several store writes in a row. What a participant enlists for each
-/// commits with that write, so each change still commits with the row it describes; a failure
-/// part-way leaves the earlier writes, and their changes, committed.
+/// <b>Calls that are several operations.</b> Uploading straight to an entity is an upload and then
+/// an attach; <c>DetachAllAsync</c> is a detach per link; <c>DeleteAllAsync</c> is a detach per
+/// link to a file somebody else still uses, then a delete per file nobody else does. Each change
+/// commits with its own write and shares the call's <see cref="MediaChange.CorrelationId"/>; a
+/// failure part-way leaves the earlier writes, and their changes, committed.
 /// </para>
 /// </remarks>
 public interface IMediaWriteParticipant
@@ -84,4 +88,18 @@ public interface IEnlistingMediaStore : IMediaStore
     /// <param name="ct">Cancellation token.</param>
     /// <exception cref="MediaNotFoundException">The row was deleted underneath the caller.</exception>
     Task DeleteFileAsync(MediaFile file, bool softDelete, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes every link <paramref name="link"/>'s owner has in <paramref name="link"/>'s role and
+    /// adds <paramref name="link"/> as <b>one</b> write, so a role is never left empty by a
+    /// replacement that failed half-way, and a participant's record of the replacement commits with
+    /// both halves or neither.
+    /// </summary>
+    /// <param name="link">The new link. Its owner and role name the role being replaced.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>How many links it displaced.</returns>
+    /// <exception cref="MediaConflictException">
+    /// The role changed between the caller reading it and this writing it.
+    /// </exception>
+    Task<int> ReplaceAttachmentsAsync(MediaAttachment link, CancellationToken ct = default);
 }

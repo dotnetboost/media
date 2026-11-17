@@ -9,9 +9,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - **Write participants: `IMediaWriteParticipant`, registered with `UseWriteParticipant<T>()`.**
-  Told about every write — `Uploaded`, `Updated`, `Attached`, `Detached`, `Reordered`, `Deleted`,
-  as a `MediaChange` carrying the file, the owner's `(entityName, entityId)`, the role and the
-  position — **before** the store saves it. What a participant enlists through the new
+  Told about every write — `Uploaded`, `Updated`, `Attached`, `Detached`, `Replaced`, `Reordered`,
+  `Deleted` — as a `MediaChange` carrying the file, the owner's `(entityName, entityId)`, the role
+  and the position, **before** the store saves it. Each change is one operation: a delete lists the
+  links that go with it, a replacement names the file it displaced, a reorder carries the role's
+  whole order before and after. What a participant enlists through the new
   `EfCoreMediaWriteScope` is saved by the store's own `SaveChanges`, so an audit entry commits with
   the change or not at all; a participant that throws aborts the write. Until now the only hook was
   `IMediaFilesDeletedHandler`, which hears about deletes only, after the fact, and cannot fail them.
@@ -29,6 +31,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `inline handler #N in {Class}` instead of all reporting as `DelegateMediaFilesDeletedHandler`.
 - **A startup line listing the registered files-deleted handlers**, or saying there are none
   (Debug, events 7101 and 7102).
+
+### Changed
+- **Replacing a single-valued role is one write on the EF Core store.** `SetAsync` (and
+  `"replace": true` through the REST API) used to remove the old holder and then add the new one
+  in two saves, so a failure in between left the role empty. Both now go in one `SaveChanges`.
+  Dapper and MongoDB are unchanged.
+- **`DeleteAllAsync` keeps a file attached until it deletes it.** It used to remove all of the
+  entity's links first, so a failure part-way left the files it had not reached attached to
+  nothing. Links to files somebody else uses are still removed first; each file nobody else uses is
+  now deleted together with its link.
+- **The EF Core store deletes a file's links and its row in one `SaveChanges`.**
 
 ### Fixed
 - **Handlers are no longer cancelled by the caller's token.** They get `CancellationToken.None`:

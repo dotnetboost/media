@@ -483,21 +483,24 @@ public sealed class MediaAuditParticipant(EfCoreMediaWriteScope scope) : IMediaW
 }
 ```
 
-Each change is one `MediaChange`:
+Each change is one `MediaChange`, and each is **one operation** a caller asked for, however many
+rows it touches:
 
 | Kind | When | Set |
 |---|---|---|
 | `Uploaded` | A new file's row is recorded (the bytes are already stored). | `File` |
 | `Updated` | Name, category, tags or metadata change. | `File` (after), `Previous` (before) |
-| `Attached` | A file is linked to an entity. | `File`, `Owner`, `Role`, `SortOrder` |
-| `Detached` | A link is removed — by a detach, a role replacement, `DetachAllAsync`, `DeleteAllAsync` or a delete. | `File`, `Owner`, `Role`, `PreviousSortOrder` |
-| `Reordered` | A file moves within a role. Only the files that moved. | `File`, `Owner`, `Role`, `SortOrder`, `PreviousSortOrder` |
-| `Deleted` | A file is deleted. Its remaining links are reported first, as `Detached`. | `File` (as it was), `SoftDeleted` |
+| `Attached` | A file is linked to an entity, in a role nothing else holds. | `File`, `Owner`, `Role`, `SortOrder` |
+| `Detached` | A link is removed by a detach — `DetachAsync`, `DetachAllAsync`, the REST detach, or `DeleteAllAsync` for a file somebody else still uses. Never by a delete. | `File`, `Owner`, `Role`, `PreviousSortOrder` |
+| `Replaced` | A file takes a single-valued role from the file that held it (`SetAsync`, or `"replace": true`). | `File` (the new holder), `Owner`, `Role`, `Displaced` (the files it displaced) |
+| `Reordered` | The files in one role are put in a new order. One change for the whole role. | `Owner`, `Role`, `Order`, `PreviousOrder` |
+| `Deleted` | A file is deleted, with every link it still has. | `File` (as it was), `Attachments` (the links that go with it), `SoftDeleted` |
 
 `Owner` is the entity's `(entityName, entityId)` — the same address every DotNetBoost library
 uses — so an attach can be recorded against the product it was attached to, not just the file.
-`File` is read before the write, so a delete can still name what it deleted; it is `null` only for a
-link whose file row no longer exists.
+`File` and the lists are read before the write, so a delete can still name what it deleted and a
+reorder can show the order it replaced. `MediaFileId` is set for every kind but `Reordered`, which
+is about a role rather than a file.
 
 | | |
 |---|---|
@@ -513,12 +516,16 @@ so an entity added there goes out with the media rows. If the write does not com
 added is detached again, so your next unrelated `SaveChangesAsync` cannot save it. Only the entity
 passed to `Add` is detached — enlist each entity of a graph, not just its root.
 
-**Some operations are several writes.** Replacing a single-valued role is a detach and then an
-attach; `DeleteAllAsync` is a detach and then a delete per file; uploading to an entity is an
-upload and then an attach. Each change commits with its own write, so a failure part-way leaves the
-earlier steps — and their records — committed, exactly as the media rows are. A single delete is
-**one** write on the EF Core store: its links, its row and every change enlisted for it commit
-together.
+**One operation, one write.** On the EF Core store a delete removes the file's links and its row in
+one `SaveChanges`, and a replacement removes the old holder and adds the new one in one
+`SaveChanges`, so what a participant enlists for either commits with all of it or none of it.
+
+**Some calls are several operations.** Uploading to an entity is an upload and then an attach;
+`DetachAllAsync` is a detach per link; `DeleteAllAsync` is a detach per link to a file somebody
+else still uses, then a delete per file nobody else does — each file deleted together with its
+link to this entity. Each change commits with its own write and they share one `CorrelationId`, so
+a failure part-way leaves the earlier steps, and their records, committed, exactly as the media
+rows are.
 
 ## Composite keys
 

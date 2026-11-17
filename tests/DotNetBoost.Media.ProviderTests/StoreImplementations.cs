@@ -139,7 +139,7 @@ public sealed class MediaJournalEntry
 
     public string Kind { get; set; } = string.Empty;
 
-    public Guid MediaFileId { get; set; }
+    public Guid? MediaFileId { get; set; }
 
     public string? Owner { get; set; }
 

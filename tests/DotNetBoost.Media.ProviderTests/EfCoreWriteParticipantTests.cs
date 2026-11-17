@@ -115,14 +115,68 @@ public sealed class EfCoreWriteParticipantTests : IAsyncLifetime
 
         Assert.True(await media.DeleteAsync(file.Id));
 
-        var journal = (await JournalAsync()).Where(e => e.Kind is "Detached" or "Deleted").ToList();
-        Assert.Equal(3, journal.Count);
-        Assert.Single(journal.Select(e => e.CorrelationId).Distinct());
+        // One operation, one entry: the delete, not a detach per product before it.
+        var journal = await JournalAsync();
+        Assert.DoesNotContain(journal, e => e.Kind == "Detached");
+        Assert.Equal(file.Id, Assert.Single(journal, e => e.Kind == "Deleted").MediaFileId);
 
         using var check = _services.CreateScope();
         var db = check.ServiceProvider.GetRequiredService<MediaTestContext>();
         Assert.Empty(await db.Set<MediaAttachment>().ToListAsync());
         Assert.NotNull((await db.Set<MediaFile>().SingleAsync()).DeletedAt);
+    }
+
+    [Fact]
+    public async Task A_replacement_saves_the_new_holder_and_its_entry_in_one_write()
+    {
+        using var scope = _services.CreateScope();
+        var media = scope.ServiceProvider.GetRequiredService<IMediaManager>();
+
+        var first  = await media.For("Product", "1").UploadAsync(TestMedia.Upload(TestMedia.Png(), role: "primary"));
+        var second = await media.UploadAsync(TestMedia.Upload(TestMedia.Png(32)));
+
+        await media.For("Product", "1").SetAsync("primary", second.Id);
+
+        Assert.Equal(second.Id, Assert.Single(await JournalAsync(), e => e.Kind == "Replaced").MediaFileId);
+
+        using var check = _services.CreateScope();
+        var links = await check.ServiceProvider.GetRequiredService<MediaTestContext>()
+            .Set<MediaAttachment>().AsNoTracking().ToListAsync();
+        Assert.Equal([second.Id], links.Select(l => l.MediaFileId));
+        Assert.NotEqual(first.Id, second.Id);
+    }
+
+    [Fact]
+    public async Task A_replacement_that_fails_keeps_the_old_holder_in_the_role()
+    {
+        using var scope = _services.CreateScope();
+        var media   = scope.ServiceProvider.GetRequiredService<IMediaManager>();
+        var context = scope.ServiceProvider.GetRequiredService<MediaTestContext>();
+
+        var first  = await media.For("Product", "1").UploadAsync(TestMedia.Upload(TestMedia.Png(), role: "primary"));
+        var second = await media.UploadAsync(TestMedia.Upload(TestMedia.Png(32)));
+
+        // The INSERT of the new link is refused by the database — after the DELETE of the old
+        // holder has run, in the same transaction.
+        await context.Database.ExecuteSqlRawAsync("""
+            CREATE TRIGGER refuse_link BEFORE INSERT ON MediaAttachments
+            BEGIN SELECT RAISE(ABORT, 'refused by the test'); END;
+            """);
+
+        try
+        {
+            await Assert.ThrowsAsync<DbUpdateException>(() => media.For("Product", "1").SetAsync("primary", second.Id));
+        }
+        finally
+        {
+            await context.Database.ExecuteSqlRawAsync("DROP TRIGGER refuse_link;");
+        }
+
+        // The DELETE rolled back with the INSERT: the old holder is still there.
+        var links = await context.Set<MediaAttachment>().AsNoTracking().ToListAsync();
+        Assert.Contains(links, l => l.MediaFileId == first.Id);
+        Assert.Equal(0, PendingJournalEntries(context));
+        Assert.DoesNotContain(context.ChangeTracker.Entries<MediaAttachment>(), e => e.State != EntityState.Unchanged);
     }
 
     [Fact]

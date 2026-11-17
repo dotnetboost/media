@@ -567,23 +567,23 @@ internal sealed partial class MediaManager(
     }
 
     /// <summary>
-    /// What deleting <paramref name="file"/> does, as participants are told it: a detach for every
-    /// link it still has, then the delete itself.
+    /// What deleting <paramref name="file"/> does, as participants are told it: one delete, listing
+    /// every link that goes with it. Read here, before anything is removed, which is the only moment
+    /// the links can still be read.
     /// </summary>
     private async Task<IReadOnlyList<MediaChange>> DescribeDeleteAsync(
         MediaFile file, string correlationId, CancellationToken ct)
     {
-        var info  = MediaFileInfo.From(file);
         var links = await store.ListAttachmentsOfFileAsync(file.Id, ct).ConfigureAwait(false);
 
         return
         [
-            .. links.Select(link => Detached(info, link, correlationId)),
             new MediaChange
             {
                 Kind          = MediaChangeKind.Deleted,
                 MediaFileId   = file.Id,
-                File          = info,
+                File          = MediaFileInfo.From(file),
+                Attachments   = [.. links.Select(MediaAttachmentInfo.From)],
                 SoftDeleted   = options.SoftDelete,
                 CorrelationId = correlationId,
                 OccurredAt    = Now
@@ -1006,20 +1006,52 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         var correlationId = MediaManager.NewCorrelationId();
 
-        // One statement rather than one per holder. A single-valued role normally has exactly one
-        // to displace, but the role filter already exists and removing them one at a time would
-        // leave a window in which the role had some of its old holders and none of its new one.
-        if (holders.Count > 0)
+        // Nothing to displace: this is an attach, and is reported as one.
+        //
+        // Position zero, here and below: a role that holds one file has no ordering to preserve,
+        // and leaving the displaced file's index behind would start the next gallery at 4.
+        if (holders.Count == 0)
         {
-            var changes = await DescribeDetachAsync(holders, correlationId, ct).ConfigureAwait(false);
-
-            await manager.WriteAsync(changes, () => store.RemoveAttachmentsAsync(owner, normalized, ct), ct)
-                .ConfigureAwait(false);
+            await AttachAsync(file, normalized, sortOrder: 0, correlationId, ct).ConfigureAwait(false);
+            return file;
         }
 
-        // Position zero: a role that holds one file has no ordering to preserve, and leaving the
-        // displaced file's index behind would start the next gallery at 4.
-        await AttachAsync(file, normalized, sortOrder: 0, correlationId, ct).ConfigureAwait(false);
+        var link = NewLink(file.Id, normalized, sortOrder: 0);
+
+        IReadOnlyList<MediaChange> changes = manager.HasParticipants
+            ? [new MediaChange
+              {
+                  Kind          = MediaChangeKind.Replaced,
+                  MediaFileId   = file.Id,
+                  File          = file,
+                  Owner         = owner,
+                  Role          = normalized,
+                  SortOrder     = 0,
+                  Displaced     = await DescribeDisplacedAsync(holders.Where(h => h.MediaFileId != id), ct)
+                                      .ConfigureAwait(false),
+                  CorrelationId = correlationId,
+                  OccurredAt    = link.CreatedAt
+              }]
+            : [];
+
+        await manager.WriteAsync(changes, async () =>
+        {
+            if (store is IEnlistingMediaStore enlisting)
+            {
+                // The old holders out and the new one in, as one write: the role is never left
+                // empty by a replacement that failed half-way.
+                await enlisting.ReplaceAttachmentsAsync(link, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                // A store with no unit of work to share: two writes, removing every holder in one
+                // statement rather than one per holder, so the window in which the role has none is
+                // as short as it can be. See docs/limitations.md.
+                await store.RemoveAttachmentsAsync(owner, normalized, ct).ConfigureAwait(false);
+                await store.AddAttachmentAsync(link, ct).ConfigureAwait(false);
+            }
+        }, ct).ConfigureAwait(false);
+
         return file;
     }
 
@@ -1063,24 +1095,23 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         if (manager.HasParticipants)
         {
-            var correlationId = MediaManager.NewCorrelationId();
-            var files         = await manager.SnapshotsAsync(moves.Select(m => m.Attachment.MediaFileId), ct)
-                                             .ConfigureAwait(false);
+            // One change for the whole role, with every file in it before and after — read before
+            // anything moves, which is the only moment the old order can still be read.
+            var files  = await manager.SnapshotsAsync(attached.Select(a => a.MediaFileId), ct).ConfigureAwait(false);
+            var before = attached.OrderBy(a => a.SortOrder).ThenBy(a => a.Id).Select(a => a.MediaFileId);
 
             changes =
             [
-                .. moves.Select(m => new MediaChange
+                new MediaChange
                 {
-                    Kind              = MediaChangeKind.Reordered,
-                    MediaFileId       = m.Attachment.MediaFileId,
-                    File              = files[m.Attachment.MediaFileId],
-                    Owner             = owner,
-                    Role              = normalized,
-                    SortOrder         = m.To,
-                    PreviousSortOrder = m.Attachment.SortOrder,
-                    CorrelationId     = correlationId,
-                    OccurredAt        = manager.Now
-                })
+                    Kind          = MediaChangeKind.Reordered,
+                    Owner         = owner,
+                    Role          = normalized,
+                    Order         = [.. idsInOrder.Select(fileId => files[fileId]).OfType<MediaFileInfo>()],
+                    PreviousOrder = [.. before.Select(fileId => files[fileId]).OfType<MediaFileInfo>()],
+                    CorrelationId = MediaManager.NewCorrelationId(),
+                    OccurredAt    = manager.Now
+                }
             ];
         }
 
@@ -1166,11 +1197,12 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
 
         // One id for the detaches and every delete that follows: it is one call.
         var correlationId = MediaManager.NewCorrelationId();
-        var detaches      = await DescribeDetachAsync(attached, correlationId, ct).ConfigureAwait(false);
 
-        // This entity's links go either way: the ones on shared files are the detach, and the ones
-        // on sole-held files would be cascaded by the delete anyway.
-        await manager.WriteAsync(detaches, () => store.RemoveAttachmentsAsync(owner, role: null, ct), ct)
+        // First, this entity's links to files somebody else still uses: a detach each. Only those —
+        // a file nobody else uses keeps its link to this entity until the file itself goes, below,
+        // so a failure part-way leaves it attached here (and found again by a retry) rather than
+        // attached to nothing.
+        await DetachEachAsync([.. attached.Where(a => shared.Contains(a.MediaFileId))], correlationId, ct)
             .ConfigureAwait(false);
 
         var deleted = new List<Guid>(fileIds.Length);
@@ -1182,11 +1214,21 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                 // Re-read rather than trust the list: another request may have deleted the file
                 // between the two, and DeleteFileAsync needs the row to find the bytes.
                 var file = await store.FindAsync(fileId, includeDeleted: false, ct).ConfigureAwait(false);
+
                 if (file is null)
+                {
+                    // Gone already. A delete through this library takes its links with it, so
+                    // there is normally nothing left here — but if a link did outlive its file,
+                    // this entity is being cleared, and it goes as a detach.
+                    await DetachEachAsync([.. attached.Where(a => a.MediaFileId == fileId)], correlationId, ct)
+                        .ConfigureAwait(false);
                     continue;
+                }
 
                 try
                 {
+                    // The file and every link it has, this entity's among them, in one write and
+                    // reported as one delete listing them.
                     await manager.DeleteFileAsync(file, correlationId, ct).ConfigureAwait(false);
                 }
                 catch (MediaNotFoundException)
@@ -1249,20 +1291,67 @@ internal sealed class MediaAccessor(MediaManager manager, IMediaStore store, Med
                    $"{string.Join(", ", manager.Roles.RolesFor(owner.EntityName).Select(r => r.Multiple ? r.Name + " (many)" : r.Name))}.");
     }
 
+    /// <summary>A new link from this entity, with the id and timestamp the engine assigns.</summary>
+    private MediaAttachment NewLink(Guid fileId, string role, int sortOrder) => new()
+    {
+        Id              = Guid.NewGuid(),
+        MediaFileId     = fileId,
+        OwnerEntityName = owner.EntityName,
+        OwnerEntityId   = owner.EntityId,
+        Role            = role,
+        SortOrder       = sortOrder,
+        CreatedAt       = manager.Now
+    };
+
+    /// <summary>
+    /// Removes <paramref name="links"/> one write each, each reported as its own detach — they are
+    /// separate links, and a failure part-way leaves the rest attached rather than half-reported.
+    /// </summary>
+    private async Task DetachEachAsync(
+        IReadOnlyList<MediaAttachment> links, string correlationId, CancellationToken ct)
+    {
+        if (links.Count == 0)
+            return;
+
+        var files = manager.HasParticipants
+            ? await manager.SnapshotsAsync(links.Select(l => l.MediaFileId), ct).ConfigureAwait(false)
+            : null;
+
+        foreach (var link in links)
+        {
+            IReadOnlyList<MediaChange> changes = files is null
+                ? []
+                : [manager.Detached(files[link.MediaFileId], link, correlationId)];
+
+            await manager.WriteAsync(changes, () => store.RemoveAttachmentAsync(link.Id, ct), ct)
+                .ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The files a replacement displaces, in their order, as participants are told them. A holder
+    /// whose file row is gone is left out: there is nothing to name it by, and a delete through this
+    /// library never leaves one.
+    /// </summary>
+    private async Task<IReadOnlyList<MediaAttachedFile>> DescribeDisplacedAsync(
+        IEnumerable<MediaAttachment> holders, CancellationToken ct)
+    {
+        var ordered = holders.OrderBy(h => h.SortOrder).ThenBy(h => h.Id).ToList();
+        var files   = await manager.SnapshotsAsync(ordered.Select(h => h.MediaFileId), ct).ConfigureAwait(false);
+
+        return
+        [
+            .. ordered
+                .Where(h => files[h.MediaFileId] is not null)
+                .Select(h => new MediaAttachedFile(files[h.MediaFileId]!, h.Role, h.SortOrder))
+        ];
+    }
+
     /// <summary>Writes one link, with the id and timestamp the engine assigns.</summary>
     private async Task AttachAsync(
         MediaFileInfo file, string role, int sortOrder, string correlationId, CancellationToken ct)
     {
-        var link = new MediaAttachment
-        {
-            Id              = Guid.NewGuid(),
-            MediaFileId     = file.Id,
-            OwnerEntityName = owner.EntityName,
-            OwnerEntityId   = owner.EntityId,
-            Role            = role,
-            SortOrder       = sortOrder,
-            CreatedAt       = manager.Now
-        };
+        var link = NewLink(file.Id, role, sortOrder);
 
         IReadOnlyList<MediaChange> changes = manager.HasParticipants
             ? [new MediaChange

@@ -121,7 +121,7 @@ public class WriteParticipantTests
     }
 
     [Fact]
-    public async Task Deleting_a_file_detaches_it_from_every_owner_then_deletes_it_in_one_write()
+    public async Task Deleting_a_file_is_one_change_listing_every_link_it_takes_with_it()
     {
         var (harness, recorder) = Create();
 
@@ -129,21 +129,35 @@ public class WriteParticipantTests
         await harness.Media.For(new Product { Id = 1 }).AddAsync(file.Id, "primary");
         await harness.Media.For(new Product { Id = 2 }).AddAsync(file.Id, "gallery");
 
+        var before       = recorder.Changes.Count;
         var writesBefore = harness.Store.CommittingWrites;
 
         Assert.True(await harness.Media.DeleteAsync(file.Id));
 
-        var delete = recorder.Changes.Skip(3).ToList();
-        Assert.Equal([MediaChangeKind.Detached, MediaChangeKind.Detached, MediaChangeKind.Deleted], delete.Select(c => c.Kind));
-        Assert.Equal(["1", "2"], delete.Take(2).Select(c => c.Owner!.Value.EntityId).Order());
-        Assert.True(delete[2].SoftDeleted);
-        Assert.Equal("shared.png", delete[2].File!.FileName);
-        Assert.Single(delete.Select(c => c.CorrelationId).Distinct());
+        // One operation, one change — no detaches of its own.
+        var deleted = Assert.Single(recorder.Changes.Skip(before));
+        Assert.Equal(MediaChangeKind.Deleted, deleted.Kind);
+        Assert.Equal("shared.png", deleted.File!.FileName);
+        Assert.True(deleted.SoftDeleted);
+        Assert.Equal(
+            [("1", "primary"), ("2", "gallery")],
+            deleted.Attachments.Select(a => (a.Owner.EntityId, a.Role)).Order());
 
-        // All three commit with the one store write that removes the links and the row.
+        // It commits with the one store write that removes the links and the row.
         Assert.Equal(1, harness.Store.FileDeletes);
         Assert.Equal(writesBefore + 1, harness.Store.CommittingWrites);
         Assert.Empty(harness.Store.Pending);
+    }
+
+    [Fact]
+    public async Task Deleting_a_file_attached_to_nothing_lists_no_links()
+    {
+        var (harness, recorder) = Create();
+
+        var file = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
+        await harness.Media.DeleteAsync(file.Id);
+
+        Assert.Empty(recorder.Changes[^1].Attachments);
     }
 
     [Fact]
@@ -174,7 +188,7 @@ public class WriteParticipantTests
     }
 
     [Fact]
-    public async Task Replacing_a_single_valued_role_is_a_detach_of_the_old_holder_and_an_attach_of_the_new()
+    public async Task Replacing_a_role_is_one_change_naming_the_file_it_displaced_in_one_write()
     {
         var (harness, recorder) = Create();
         var product = harness.Media.For(new Product { Id = 3 });
@@ -185,15 +199,50 @@ public class WriteParticipantTests
 
         await product.SetAsync("primary", second.Id);
 
-        var replace = recorder.Changes.Skip(before).ToList();
-        Assert.Equal([MediaChangeKind.Detached, MediaChangeKind.Attached], replace.Select(c => c.Kind));
-        Assert.Equal(first.Id, replace[0].MediaFileId);
-        Assert.Equal(second.Id, replace[1].MediaFileId);
-        Assert.Single(replace.Select(c => c.CorrelationId).Distinct());
+        var replaced = Assert.Single(recorder.Changes.Skip(before));
+        Assert.Equal(MediaChangeKind.Replaced, replaced.Kind);
+        Assert.Equal(second.Id, replaced.MediaFileId);
+        Assert.Equal(new MediaOwner("AuditedProduct", "3"), replaced.Owner);
+        Assert.Equal("primary", replaced.Role);
+        Assert.Equal("first.png", Assert.Single(replaced.Displaced).File.FileName);
+
+        // Both halves in one store write.
+        Assert.Equal(1, harness.Store.Replacements);
+        Assert.Equal([second.Id], harness.Store.Inner.Attachments.Select(a => a.MediaFileId));
+        Assert.NotEqual(first.Id, second.Id);
     }
 
     [Fact]
-    public async Task A_reorder_reports_only_the_files_that_moved()
+    public async Task Setting_a_role_nobody_holds_is_an_attach_not_a_replacement()
+    {
+        var (harness, recorder) = Create();
+
+        var file = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png()));
+        var before = recorder.Changes.Count;
+
+        await harness.Media.For(new Product { Id = 3 }).SetAsync("primary", file.Id);
+
+        Assert.Equal(MediaChangeKind.Attached, Assert.Single(recorder.Changes.Skip(before)).Kind);
+        Assert.Equal(0, harness.Store.Replacements);
+    }
+
+    [Fact]
+    public async Task A_refused_replacement_leaves_the_old_holder_in_the_role()
+    {
+        var (harness, _) = Create(failOn: MediaChangeKind.Replaced);
+        var product = harness.Media.For(new Product { Id = 3 });
+
+        var first  = await product.UploadAsync(TestMedia.Upload(TestMedia.Png(), role: "primary"));
+        var second = await harness.Media.UploadAsync(TestMedia.Upload(TestMedia.Png(32)));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => product.SetAsync("primary", second.Id));
+
+        Assert.Equal([first.Id], harness.Store.Inner.Attachments.Select(a => a.MediaFileId));
+        Assert.Empty(harness.Store.Pending);
+    }
+
+    [Fact]
+    public async Task A_reorder_is_one_change_with_the_whole_role_before_and_after()
     {
         var (harness, recorder) = Create();
         var product = harness.Media.For(new Product { Id = 5 });
@@ -203,18 +252,33 @@ public class WriteParticipantTests
         var c = await product.UploadAsync(TestMedia.Upload(TestMedia.Png(48), "c.png", role: "gallery"));
         var before = recorder.Changes.Count;
 
-        // a stays first; b and c swap.
-        await product.ReorderAsync("gallery", [a.Id, c.Id, b.Id]);
+        await product.ReorderAsync("gallery", [c.Id, a.Id, b.Id]);
 
-        var moves = recorder.Changes.Skip(before).ToList();
-        Assert.All(moves, m => Assert.Equal(MediaChangeKind.Reordered, m.Kind));
-        Assert.Equal(
-            [(c.Id, 2, 1), (b.Id, 1, 2)],
-            moves.Select(m => (m.MediaFileId, m.PreviousSortOrder!.Value, m.SortOrder!.Value)));
+        var reordered = Assert.Single(recorder.Changes.Skip(before));
+        Assert.Equal(MediaChangeKind.Reordered, reordered.Kind);
+        Assert.Null(reordered.MediaFileId);
+        Assert.Equal("gallery", reordered.Role);
+        Assert.Equal(["a.png", "b.png", "c.png"], reordered.PreviousOrder.Select(f => f.FileName));
+        Assert.Equal(["c.png", "a.png", "b.png"], reordered.Order.Select(f => f.FileName));
     }
 
     [Fact]
-    public async Task DeleteAll_detaches_everything_and_deletes_only_what_nobody_else_holds()
+    public async Task A_reorder_that_moves_nothing_tells_nobody()
+    {
+        var (harness, recorder) = Create();
+        var product = harness.Media.For(new Product { Id = 5 });
+
+        var a = await product.UploadAsync(TestMedia.Upload(TestMedia.Png(), "a.png", role: "gallery"));
+        var b = await product.UploadAsync(TestMedia.Upload(TestMedia.Png(32), "b.png", role: "gallery"));
+        var before = recorder.Changes.Count;
+
+        await product.ReorderAsync("gallery", [a.Id, b.Id]);
+
+        Assert.Equal(before, recorder.Changes.Count);
+    }
+
+    [Fact]
+    public async Task DeleteAll_detaches_what_others_use_and_deletes_the_rest_with_its_link()
     {
         var (harness, recorder) = Create();
         var one = harness.Media.For(new Product { Id = 1 });
@@ -227,11 +291,39 @@ public class WriteParticipantTests
         await one.DeleteAllAsync();
 
         var changes = recorder.Changes.Skip(before).ToList();
-        Assert.Equal(
-            [MediaChangeKind.Detached, MediaChangeKind.Detached, MediaChangeKind.Deleted],
-            changes.Select(c => c.Kind));
-        Assert.Equal(mine.Id, changes[2].MediaFileId);
+        Assert.Equal([MediaChangeKind.Detached, MediaChangeKind.Deleted], changes.Select(c => c.Kind));
+
+        Assert.Equal(shared.Id, changes[0].MediaFileId);
+        Assert.Equal("1", changes[0].Owner!.Value.EntityId);
+
+        // The sole-held file's link to this product is reported with its delete, not as a detach.
+        Assert.Equal(mine.Id, changes[1].MediaFileId);
+        Assert.Equal("1", Assert.Single(changes[1].Attachments).Owner.EntityId);
+
         Assert.Single(changes.Select(c => c.CorrelationId).Distinct());
+    }
+
+    [Fact]
+    public async Task DeleteAll_that_fails_part_way_leaves_the_undeleted_files_attached()
+    {
+        var (harness, _) = Create();
+        var product = harness.Media.For(new Product { Id = 1 });
+
+        await product.UploadAsync(TestMedia.Upload(TestMedia.Png(), "first.png"));
+        await product.UploadAsync(TestMedia.Upload(TestMedia.Png(32), "second.png"));
+
+        harness.Store.FailFileDeletesAfter = 1;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => product.DeleteAllAsync());
+
+        // One went; the other is still this product's, where a retry will find it — not an
+        // unattached file nothing points at.
+        var left = Assert.Single(await product.ListAsync());
+        Assert.Equal(left.Id, Assert.Single(harness.Store.Inner.Attachments).MediaFileId);
+
+        harness.Store.FailFileDeletesAfter = null;
+        Assert.Single(await product.DeleteAllAsync());
+        Assert.Empty(harness.Store.Inner.Attachments);
     }
 
     // ── What a refusal does ────────────────────────────────────────────────
